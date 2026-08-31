@@ -1,44 +1,33 @@
-# Telegram YouTube Audio Bot — v0.3.0
+# Audio Bot — RapidAPI version
 
-Telegram bot that downloads authorized YouTube media, extracts audio with FFmpeg/yt-dlp, and sends an MP3 back to Telegram.
+This update replaces the direct `yt-dlp` YouTube extraction flow with the RapidAPI service used in the RapidAPI screenshots.
 
-## Version check
+## Required environment variables
 
-Send any of:
+- `BOT_TOKEN`
+- `RAPIDAPI_KEY`
 
-- `Hey`
-- `Hello`
-- `Hi`
-- `Hii`
+## RapidAPI endpoints
 
-Expected response:
+- `GET /api/v1/download`
+- `GET /api/v1/progress?id=PROGRESS_ID`
 
-`👋 Hey! Audio Bot v0.3.0 is online and running.`
+The bot requests audio as:
 
-You can also send `/version`.
+- `format=mp3`
+- `audioQuality=128`
+- `addInfo=false`
+- `allowExtendedDuration=false`
 
-## Cloudflare Containers
+## GitHub update
 
-This repository is configured for Cloudflare Containers.
+Replace these files in the existing repository:
 
-Cloudflare deploy command:
+1. `bot.py`
+2. `requirements.txt`
+3. `Dockerfile`
+4. `.env.example` (optional but recommended)
 
-```bash
-npx wrangler deploy
-```
+Then add `RAPIDAPI_KEY` to your hosting provider's environment variables.
 
-Set `BOT_TOKEN` as a Cloudflare Worker secret before/after deployment.
-
-The container exposes port 8080 for Cloudflare health/routing while the Telegram bot uses long polling.
-
-## Notes
-
-- FFmpeg and Node.js are installed in the container.
-- yt-dlp is configured to use Node.js as its JavaScript runtime.
-- Playlists are disabled.
-- Converted files are deleted after processing.
-- A safety limit is applied before Telegram upload.
-- Container instances are kept alive through the Container lifecycle hook and a five-minute scheduled health/start check.
-- Cloudflare Container instances use ephemeral disk.
-
-Only download media you own or are authorized to download, and comply with YouTube's terms and applicable copyright law.
+Do not commit real API keys to GitHub.
