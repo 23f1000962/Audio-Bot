@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "audio-bot",
   "main": "src/index.js",
-  "compatibility_date": "2026-08-31",
+  "compatibility_date": "2026-09-01",
   "containers": [
     {
       "class_name": "AudioBotContainer",
