@@ -1,83 +1,22 @@
 # Telegram YouTube Audio Bot
 
-A Telegram bot that accepts a YouTube video link, downloads the audio, converts it to MP3, and sends it back to the user.
+**Model version: 0.2.0**
 
-## Features
+Telegram bot that accepts YouTube video links, downloads audio, converts it to MP3, and sends it back.
 
-- Live download progress updates
-- Audio extraction to MP3
-- No application-imposed file-size limit
-- Automatic cleanup after every request
-- Startup cleanup for files left by crashes
-- Playlists are explicitly disabled
-- Simple environment-variable configuration
+## v0.2.0 changes
+- `Hey`, `Hello`, `Hii`, `Hi` health-check replies
+- Every health/error/status response shows the bot model version
+- Broader YouTube URL matching
+- No artificial source-media download-size cap
+- Better yt-dlp YouTube support with `yt-dlp[default]` and Node.js
+- Longer Telegram HTTP timeouts for larger uploads
+- Explicit final MP3 size check with a safe Telegram upload ceiling
+- Automatic cleanup after every request and at startup
 
-> Telegram and hosting infrastructure may still impose their own upload or storage limits.
+## Deployment
+The Dockerfile installs FFmpeg and Node.js. Set `BOT_TOKEN` in your hosting provider's environment variables and deploy the `main` branch.
 
-## Requirements
+Send `/start`, then send a YouTube URL.
 
-- Python 3.10+
-- FFmpeg
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
-
-## Installation
-
-### 1. Clone the repository
-
-```bash
-git clone https://github.com/23f1000962/Audio-Bot.git
-cd Audio-Bot
-```
-
-### 2. Install FFmpeg
-
-Ubuntu/Debian:
-
-```bash
-sudo apt update
-sudo apt install ffmpeg
-```
-
-### 3. Create and activate a virtual environment
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Windows:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-### 4. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 5. Configure your bot token
-
-```bash
-export BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
-```
-
-Windows PowerShell:
-
-```powershell
-$env:BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
-```
-
-### 6. Run
-
-```bash
-python bot.py
-```
-
-## Usage
-
-Send `/start` to the bot and then send a supported YouTube video URL.
-
-Please use the bot only for media you own or are authorized to download, and comply with the terms of the relevant platform and applicable copyright laws.
+> Telegram's infrastructure still imposes upload limits. The bot therefore checks the final MP3 size before uploading.

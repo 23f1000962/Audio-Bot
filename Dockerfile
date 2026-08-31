@@ -1,19 +1,17 @@
-# Python runtime for the Telegram Audio Bot
 FROM python:3.13-slim
 
-# Install FFmpeg, required by yt-dlp for MP3 audio extraction
+# FFmpeg: MP3 extraction
+# Node.js: JavaScript runtime used by current yt-dlp YouTube challenge handling
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg nodejs ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install Python dependencies first for better build caching
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -U pip \
+    && pip install --no-cache-dir -U -r requirements.txt
 
-# Copy the application
 COPY . .
 
-# Run the Telegram bot
 CMD ["python", "bot.py"]
