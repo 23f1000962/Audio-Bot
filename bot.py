@@ -21,7 +21,7 @@ from telegram.ext import (
 )
 
 
-MODEL_VERSION = "0.5.1"
+MODEL_VERSION = "0.5.2"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
@@ -29,7 +29,7 @@ PORT = int(os.getenv("PORT", "8080"))
 
 RAPIDAPI_HOST = os.getenv(
     "RAPIDAPI_HOST",
-    "youtube-mp-mp3-downloader1.p.rapidapi.com",
+    "youtube-mp-mp3-downloader.p.rapidapi.com",
 )
 RAPIDAPI_BASE_URL = os.getenv(
     "RAPIDAPI_BASE_URL",
@@ -44,7 +44,6 @@ POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "600"))
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Conservative limit. Telegram Bot API upload limits may vary by hosting/API method.
 MAX_TELEGRAM_AUDIO_BYTES = 49 * 1024 * 1024
 
 YOUTUBE_REGEX = re.compile(
@@ -102,8 +101,10 @@ def youtube_video_id(url: str) -> str:
     normalized = normalize_youtube_url(url)
     parsed = urlparse(normalized)
     video_ids = parse_qs(parsed.query).get("v")
+
     if not video_ids:
         raise ValueError("Could not determine the YouTube video ID.")
+
     return video_ids[0]
 
 
@@ -135,6 +136,7 @@ def request_download(video_id: str) -> dict:
         headers=rapidapi_headers(),
         timeout=60,
     )
+
     response.raise_for_status()
 
     try:
@@ -158,17 +160,20 @@ def first_value(data, keys):
     if isinstance(data, dict):
         for key in keys:
             value = data.get(key)
+
             if value not in (None, ""):
                 return value
 
         for value in data.values():
             found = first_value(value, keys)
+
             if found not in (None, ""):
                 return found
 
     elif isinstance(data, list):
         for value in data:
             found = first_value(value, keys)
+
             if found not in (None, ""):
                 return found
 
@@ -186,9 +191,12 @@ def find_download_url(data):
         "audio_url",
         "link",
     )
+
     value = first_value(data, keys)
 
-    if isinstance(value, str) and value.startswith(("http://", "https://")):
+    if isinstance(value, str) and value.startswith(
+        ("http://", "https://")
+    ):
         return value
 
     return None
@@ -196,7 +204,11 @@ def find_download_url(data):
 
 def progress_is_failed(data):
     status = str(
-        first_value(data, ("status", "state", "progressStatus")) or ""
+        first_value(
+            data,
+            ("status", "state", "progressStatus")
+        )
+        or ""
     ).lower()
 
     if status in {"failed", "error", "cancelled", "canceled"}:
@@ -216,52 +228,14 @@ def progress_percent(data):
 
     try:
         value = float(value)
+
         if 0 <= value <= 1:
             value *= 100
+
         return max(0, min(100, value))
+
     except (TypeError, ValueError):
         return None
-
-
-def poll_until_ready(progress_id: str):
-    deadline = time.time() + POLL_TIMEOUT
-    last_data = None
-
-    while time.time() < deadline:
-        response = requests.get(
-            f"{RAPIDAPI_BASE_URL}/api/v1/progress",
-            params={"id": progress_id},
-            headers=rapidapi_headers(),
-            timeout=60,
-        )
-        response.raise_for_status()
-
-        try:
-            data = response.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                f"RapidAPI progress endpoint returned invalid JSON: "
-                f"{response.text[:300]}"
-            ) from exc
-
-        last_data = data
-
-        if progress_is_failed(data):
-            raise RuntimeError(
-                first_value(data, ("message", "error", "reason"))
-                or "RapidAPI reported that processing failed."
-            )
-
-        download_url = find_download_url(data)
-        if download_url:
-            return data, download_url
-
-        time.sleep(POLL_INTERVAL)
-
-    raise TimeoutError(
-        "Timed out waiting for RapidAPI to prepare the audio. "
-        f"Last response: {json.dumps(last_data)[:500]}"
-    )
 
 
 def download_audio_file(download_url: str, video_id: str) -> Path:
@@ -274,17 +248,21 @@ def download_audio_file(download_url: str, video_id: str) -> Path:
         timeout=(30, 300),
         allow_redirects=True,
     ) as response:
+
         response.raise_for_status()
 
         content_length = response.headers.get("Content-Length")
+
         if content_length:
             try:
                 size = int(content_length)
+
                 if size > MAX_TELEGRAM_AUDIO_BYTES:
                     raise ValueError(
-                        f"Audio is {format_bytes(size)}, which is larger than "
-                        "this bot's configured Telegram upload limit."
+                        f"Audio is {format_bytes(size)}, which is larger "
+                        "than this bot's configured Telegram upload limit."
                     )
+
             except ValueError as exc:
                 if "configured Telegram upload limit" in str(exc):
                     raise
@@ -292,7 +270,10 @@ def download_audio_file(download_url: str, video_id: str) -> Path:
         total = 0
 
         with open(output_path, "wb") as output:
-            for chunk in response.iter_content(chunk_size=1024 * 256):
+
+            for chunk in response.iter_content(
+                chunk_size=1024 * 256
+            ):
                 if not chunk:
                     continue
 
@@ -300,6 +281,7 @@ def download_audio_file(download_url: str, video_id: str) -> Path:
 
                 if total > MAX_TELEGRAM_AUDIO_BYTES:
                     output.close()
+
                     try:
                         output_path.unlink()
                     except FileNotFoundError:
@@ -315,23 +297,33 @@ def download_audio_file(download_url: str, video_id: str) -> Path:
     return output_path
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     await update.message.reply_text(
         f"🎵 Audio Bot v{MODEL_VERSION} is online.\n\n"
         "Send me a YouTube video or YouTube Shorts link and I'll "
         "download the available audio and send it as MP3.\n\n"
-        "Please only download content you own or are authorized to download."
+        "Please only download content you own or are authorized "
+        "to download."
     )
 
 
-async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def version_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     await update.message.reply_text(
         f"🤖 Audio Bot version: v{MODEL_VERSION}\n"
         "✅ RapidAPI download service enabled."
     )
 
 
-async def greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def greeting(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
     await update.message.reply_text(
         f"👋 Hey! Audio Bot v{MODEL_VERSION} is online and running."
     )
@@ -381,7 +373,6 @@ async def handle_link(
             or "audio"
         )
 
-        # The API response shown in your RapidAPI dashboard uses "progressId".
         progress_id = first_value(
             request_data,
             (
@@ -398,6 +389,7 @@ async def handle_link(
         download_url = find_download_url(request_data)
 
         if not download_url:
+
             if not progress_id:
                 raise RuntimeError(
                     "RapidAPI did not return a progress ID or download URL. "
@@ -408,6 +400,7 @@ async def handle_link(
             started = time.time()
 
             while True:
+
                 if time.time() - started > POLL_TIMEOUT:
                     raise TimeoutError(
                         "Timed out waiting for RapidAPI to prepare the audio."
@@ -420,6 +413,7 @@ async def handle_link(
                     headers=rapidapi_headers(),
                     timeout=60,
                 )
+
                 progress_response.raise_for_status()
 
                 try:
@@ -443,18 +437,23 @@ async def handle_link(
                     progress_data,
                     ("title", "name"),
                 )
+
                 if progress_title:
                     title = progress_title
 
                 download_url = find_download_url(progress_data)
+
                 if download_url:
                     break
 
                 percent = progress_percent(progress_data)
+
                 if percent is not None:
                     rounded = int(percent)
+
                     if rounded != last_percent:
                         last_percent = rounded
+
                         await safe_edit(
                             status_message,
                             f"⏳ Preparing audio: {rounded}%\n"
@@ -482,7 +481,9 @@ async def handle_link(
         )
 
         if not audio_path.exists():
-            raise FileNotFoundError("The audio file was not created.")
+            raise FileNotFoundError(
+                "The audio file was not created."
+            )
 
         size = audio_path.stat().st_size
 
@@ -493,7 +494,11 @@ async def handle_link(
         )
 
         safe_title = (
-            re.sub(r"[\r\n]+", " ", str(title)).strip()[:64]
+            re.sub(
+                r"[\r\n]+",
+                " ",
+                str(title)
+            ).strip()[:64]
             or "audio"
         )
 
@@ -527,11 +532,16 @@ async def handle_link(
             pass
 
     except Exception as error:
+
         print(
-            f"Processing error: {type(error).__name__}: {error}"
+            f"Processing error: "
+            f"{type(error).__name__}: {error}"
         )
 
-        if isinstance(error, ValueError) and "large" in str(error).lower():
+        if (
+            isinstance(error, ValueError)
+            and "large" in str(error).lower()
+        ):
             message = (
                 "❌ This audio is too large for the bot's configured "
                 "Telegram upload limit.\n\n"
@@ -548,16 +558,22 @@ async def handle_link(
         await safe_edit(status_message, message)
 
     finally:
+
         if audio_path and audio_path.exists():
             try:
                 audio_path.unlink()
             except Exception as cleanup_error:
-                print(f"Cleanup error: {cleanup_error}")
+                print(
+                    f"Cleanup error: {cleanup_error}"
+                )
 
 
 class HealthHandler(BaseHTTPRequestHandler):
+
     def do_GET(self):
+
         if self.path in ("/", "/health", "/healthz"):
+
             body = json.dumps(
                 {
                     "status": "ok",
@@ -568,10 +584,17 @@ class HealthHandler(BaseHTTPRequestHandler):
             ).encode()
 
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
+            self.send_header(
+                "Content-Type",
+                "application/json"
+            )
+            self.send_header(
+                "Content-Length",
+                str(len(body))
+            )
             self.end_headers()
             self.wfile.write(body)
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -581,6 +604,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 def start_health_server():
+
     server = ThreadingHTTPServer(
         ("0.0.0.0", PORT),
         HealthHandler,
@@ -590,26 +614,36 @@ def start_health_server():
         target=server.serve_forever,
         daemon=True,
     )
+
     thread.start()
 
-    print(f"Health server listening on 0.0.0.0:{PORT}")
+    print(
+        f"Health server listening on 0.0.0.0:{PORT}"
+    )
 
 
 def cleanup_download_directory():
+
     if not DOWNLOAD_DIR.exists():
         return
 
     for item in DOWNLOAD_DIR.iterdir():
+
         try:
             if item.is_file() or item.is_symlink():
                 item.unlink()
+
             elif item.is_dir():
                 shutil.rmtree(item)
+
         except Exception as error:
-            print(f"Startup cleanup error: {error}")
+            print(
+                f"Startup cleanup error: {error}"
+            )
 
 
 def main():
+
     if not BOT_TOKEN:
         raise ValueError(
             "BOT_TOKEN environment variable is not set."
@@ -629,8 +663,13 @@ def main():
         .build()
     )
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("version", version_command))
+    app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    app.add_handler(
+        CommandHandler("version", version_command)
+    )
 
     app.add_handler(
         MessageHandler(
@@ -652,7 +691,8 @@ def main():
     )
 
     print(
-        f"🤖 Audio Bot v{MODEL_VERSION} is running with RapidAPI..."
+        f"🤖 Audio Bot v{MODEL_VERSION} "
+        "is running with RapidAPI..."
     )
 
     app.run_polling(
