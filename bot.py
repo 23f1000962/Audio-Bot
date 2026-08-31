@@ -9,7 +9,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import yt_dlp
 from telegram import Update
-from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -30,8 +29,6 @@ YOUTUBE_REGEX = re.compile(
     re.IGNORECASE,
 )
 
-# Telegram Bot API upload limit is commonly 50 MB for bots.
-# Keep a small safety margin so multipart overhead does not cause a failure.
 MAX_TELEGRAM_AUDIO_BYTES = 49 * 1024 * 1024
 
 
@@ -41,10 +38,12 @@ def format_bytes(size):
 
     units = ["B", "KB", "MB", "GB", "TB"]
     size = float(size)
+
     for unit in units:
         if size < 1024 or unit == units[-1]:
             return f"{size:.1f} {unit}"
         size /= 1024
+
     return f"{size:.1f} TB"
 
 
@@ -89,6 +88,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_message = await update.message.reply_text(
         f"🔍 Checking the link...\n🤖 v{MODEL_VERSION}"
     )
+
     loop = asyncio.get_running_loop()
     progress_data = {"last_update": 0}
 
@@ -97,17 +97,20 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         now = time.time()
+
         if now - progress_data["last_update"] < 2:
             return
 
         progress_data["last_update"] = now
 
         downloaded = data.get("downloaded_bytes", 0)
+
         total = (
             data.get("total_bytes")
             or data.get("total_bytes_estimate")
             or 0
         )
+
         speed = data.get("speed")
         percent = data.get("_percent_str", "").strip()
 
@@ -119,6 +122,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if total:
             text += f" / {format_bytes(total)}"
+
         if speed:
             text += f"\nSpeed: {format_bytes(speed)}/s"
 
@@ -128,7 +132,9 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     def download_audio():
-        output_template = str(DOWNLOAD_DIR / "%(id)s.%(ext)s")
+        output_template = str(
+            DOWNLOAD_DIR / "%(id)s.%(ext)s"
+        )
 
         ydl_opts = {
             "format": "bestaudio/best",
@@ -138,46 +144,68 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "no_warnings": True,
             "js_runtimes": {"node": {}},
             "progress_hooks": [progress_hook],
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }
+            ],
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            info = ydl.extract_info(
+                url,
+                download=True
+            )
+
             video_id = info["id"]
             title = info.get("title", "audio")
-            return DOWNLOAD_DIR / f"{video_id}.mp3", title
+
+            return (
+                DOWNLOAD_DIR / f"{video_id}.mp3",
+                title
+            )
 
     audio_path = None
 
     try:
         await safe_edit(
             status_message,
-            f"⬇️ Starting download...\n🤖 v{MODEL_VERSION}",
+            f"⬇️ Starting download...\n"
+            f"🤖 v{MODEL_VERSION}",
         )
 
-        audio_path, title = await asyncio.to_thread(download_audio)
+        audio_path, title = await asyncio.to_thread(
+            download_audio
+        )
 
         if not audio_path.exists():
-            raise FileNotFoundError("The audio file was not created.")
+            raise FileNotFoundError(
+                "The audio file was not created."
+            )
 
         size = audio_path.stat().st_size
+
         if size > MAX_TELEGRAM_AUDIO_BYTES:
             raise ValueError(
-                f"Final MP3 is {format_bytes(size)}, above the safe Telegram "
-                f"upload limit of {format_bytes(MAX_TELEGRAM_AUDIO_BYTES)}."
+                f"Final MP3 is {format_bytes(size)}, "
+                f"above the safe Telegram upload limit of "
+                f"{format_bytes(MAX_TELEGRAM_AUDIO_BYTES)}."
             )
 
         await safe_edit(
             status_message,
-            f"📤 Uploading {format_bytes(size)} to Telegram...\n"
+            f"📤 Uploading {format_bytes(size)} "
+            f"to Telegram...\n"
             f"🤖 v{MODEL_VERSION}",
         )
 
-        safe_title = re.sub(r"[\r\n]+", " ", title).strip()[:64] or "audio"
+        safe_title = re.sub(
+            r"[\r\n]+",
+            " ",
+            title
+        ).strip()[:64] or "audio"
 
         with open(audio_path, "rb") as audio:
             await update.message.reply_audio(
@@ -192,8 +220,10 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await safe_edit(
             status_message,
-            f"✅ Done!\n🤖 Audio Bot v{MODEL_VERSION}",
+            f"✅ Done!\n"
+            f"🤖 Audio Bot v{MODEL_VERSION}",
         )
+
         await asyncio.sleep(2)
 
         try:
@@ -202,45 +232,81 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     except Exception as error:
-        print(f"Processing error: {type(error).__name__}: {error}")
+        print(
+            f"Processing error: "
+            f"{type(error).__name__}: {error}"
+        )
 
-        if isinstance(error, ValueError) and "above the safe Telegram" in str(error):
+        if (
+            isinstance(error, ValueError)
+            and "above the safe Telegram" in str(error)
+        ):
             message = (
-                f"❌ The converted MP3 is too large for Telegram.\n\n"
-                f"Size: {format_bytes(audio_path.stat().st_size) if audio_path and audio_path.exists() else 'Unknown'}\n"
-                f"Safe limit: {format_bytes(MAX_TELEGRAM_AUDIO_BYTES)}\n\n"
+                f"❌ The converted MP3 is too large "
+                f"for Telegram.\n\n"
+                f"Size: "
+                f"{format_bytes(audio_path.stat().st_size) if audio_path and audio_path.exists() else 'Unknown'}\n"
+                f"Safe limit: "
+                f"{format_bytes(MAX_TELEGRAM_AUDIO_BYTES)}\n\n"
                 f"🤖 Audio Bot v{MODEL_VERSION}"
             )
         else:
             message = (
                 "❌ Sorry, I couldn't process this link.\n"
-                "It may be unavailable, unsupported, blocked by YouTube, "
-                "or too large for Telegram.\n\n"
+                "It may be unavailable, unsupported, "
+                "blocked by YouTube, or too large "
+                "for Telegram.\n\n"
                 f"🤖 Audio Bot v{MODEL_VERSION}"
             )
 
-        await safe_edit(status_message, message)
+        await safe_edit(
+            status_message,
+            message
+        )
 
     finally:
         if audio_path and audio_path.exists():
             try:
                 audio_path.unlink()
             except Exception as cleanup_error:
-                print(f"Cleanup error: {cleanup_error}")
+                print(
+                    f"Cleanup error: "
+                    f"{cleanup_error}"
+                )
 
 
 class HealthHandler(BaseHTTPRequestHandler):
+
     def do_GET(self):
-        if self.path in ("/", "/health", "/healthz"):
+
+        if self.path in (
+            "/",
+            "/health",
+            "/healthz",
+        ):
+
             body = (
-                f'{{"status":"ok","version":"{MODEL_VERSION}",'
+                f'{{"status":"ok",'
+                f'"version":"{MODEL_VERSION}",'
                 f'"service":"telegram-youtube-audio-bot"}}'
             ).encode()
+
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
+
+            self.send_header(
+                "Content-Type",
+                "application/json"
+            )
+
+            self.send_header(
+                "Content-Length",
+                str(len(body))
+            )
+
             self.end_headers()
+
             self.wfile.write(body)
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -250,48 +316,104 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 
 def start_health_server():
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), HealthHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+
+    server = ThreadingHTTPServer(
+        ("0.0.0.0", PORT),
+        HealthHandler
+    )
+
+    thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True
+    )
+
     thread.start()
-    print(f"Health server listening on 0.0.0.0:{PORT}")
+
+    print(
+        f"Health server listening on "
+        f"0.0.0.0:{PORT}"
+    )
 
 
 def cleanup_download_directory():
     """Remove files left behind after crashes or interrupted downloads."""
+
     if not DOWNLOAD_DIR.exists():
         return
 
     for item in DOWNLOAD_DIR.iterdir():
+
         try:
+
             if item.is_file() or item.is_symlink():
                 item.unlink()
+
             elif item.is_dir():
                 shutil.rmtree(item)
+
         except Exception as error:
-            print(f"Startup cleanup error: {error}")
+
+            print(
+                f"Startup cleanup error: "
+                f"{error}"
+            )
 
 
 def main():
+
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN environment variable is not set.")
+        raise ValueError(
+            "BOT_TOKEN environment variable is not set."
+        )
 
     cleanup_download_directory()
+
     start_health_server()
 
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("version", version_command))
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        CommandHandler(
+            "version",
+            version_command
+        )
+    )
+
     app.add_handler(
         MessageHandler(
-            filters.Regex(re.compile(r"^\s*(?:hey|hello|hii|hi)\s*[!.]?\s*$", re.I)),
+            filters.Regex(
+                re.compile(
+                    r"^\s*(?:hey|hello|hii|hi)\s*[!.]?\s*$",
+                    re.I
+                )
+            ),
             greeting,
         )
     )
+
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link)
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_link
+        )
     )
 
-    print(f"🤖 Audio Bot v{MODEL_VERSION} is running...")
+    print(
+        f"🤖 Audio Bot v{MODEL_VERSION} "
+        f"is running..."
+    )
+
     app.run_polling(
         drop_pending_updates=False,
         allowed_updates=Update.ALL_TYPES,
