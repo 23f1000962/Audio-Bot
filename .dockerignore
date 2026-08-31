@@ -1,6 +1,10 @@
+.git
+.gitignore
+.env
+.env.*
+downloads/
 __pycache__/
 *.pyc
-.venv/
-downloads/
-.env
-.git/
+node_modules/
+.wrangler/
+README.md

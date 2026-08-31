@@ -1,22 +1,44 @@
-# Telegram YouTube Audio Bot
+# Telegram YouTube Audio Bot — v0.3.0
 
-**Model version: 0.2.0**
+Telegram bot that downloads authorized YouTube media, extracts audio with FFmpeg/yt-dlp, and sends an MP3 back to Telegram.
 
-Telegram bot that accepts YouTube video links, downloads audio, converts it to MP3, and sends it back.
+## Version check
 
-## v0.2.0 changes
-- `Hey`, `Hello`, `Hii`, `Hi` health-check replies
-- Every health/error/status response shows the bot model version
-- Broader YouTube URL matching
-- No artificial source-media download-size cap
-- Better yt-dlp YouTube support with `yt-dlp[default]` and Node.js
-- Longer Telegram HTTP timeouts for larger uploads
-- Explicit final MP3 size check with a safe Telegram upload ceiling
-- Automatic cleanup after every request and at startup
+Send any of:
 
-## Deployment
-The Dockerfile installs FFmpeg and Node.js. Set `BOT_TOKEN` in your hosting provider's environment variables and deploy the `main` branch.
+- `Hey`
+- `Hello`
+- `Hi`
+- `Hii`
 
-Send `/start`, then send a YouTube URL.
+Expected response:
 
-> Telegram's infrastructure still imposes upload limits. The bot therefore checks the final MP3 size before uploading.
+`👋 Hey! Audio Bot v0.3.0 is online and running.`
+
+You can also send `/version`.
+
+## Cloudflare Containers
+
+This repository is configured for Cloudflare Containers.
+
+Cloudflare deploy command:
+
+```bash
+npx wrangler deploy
+```
+
+Set `BOT_TOKEN` as a Cloudflare Worker secret before/after deployment.
+
+The container exposes port 8080 for Cloudflare health/routing while the Telegram bot uses long polling.
+
+## Notes
+
+- FFmpeg and Node.js are installed in the container.
+- yt-dlp is configured to use Node.js as its JavaScript runtime.
+- Playlists are disabled.
+- Converted files are deleted after processing.
+- A safety limit is applied before Telegram upload.
+- Container instances are kept alive through the Container lifecycle hook and a five-minute scheduled health/start check.
+- Cloudflare Container instances use ephemeral disk.
+
+Only download media you own or are authorized to download, and comply with YouTube's terms and applicable copyright law.

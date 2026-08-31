@@ -1,0 +1,31 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "audio-bot",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "containers": [
+    {
+      "class_name": "AudioBotContainer",
+      "image": "./Dockerfile",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "AUDIO_BOT_CONTAINER",
+        "class_name": "AudioBotContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["AudioBotContainer"]
+    }
+  ],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  }
+}

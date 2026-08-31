@@ -3,12 +3,13 @@ import re
 import asyncio
 import shutil
 import time
+import threading
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import yt_dlp
 from telegram import Update
-from telegram.error import BadRequest
-from telegram.request import HTTPXRequest
+from telegram.error import BadRequest, NetworkError, TimedOut
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,41 +18,34 @@ from telegram.ext import (
     filters,
 )
 
-MODEL_VERSION = "0.2.0"
+MODEL_VERSION = "0.3.0"
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.getenv("PORT", "8080"))
 
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Telegram's cloud Bot API currently has a practical 50 MB upload ceiling for
-# bot media. Keep a safety margin so headers/transport do not push us over it.
-TELEGRAM_UPLOAD_LIMIT = 50 * 1024 * 1024
-SAFE_UPLOAD_LIMIT = 48 * 1024 * 1024
-
 YOUTUBE_REGEX = re.compile(
-    r"^(?:https?://)?(?:www\.)?(?:youtube\.com|youtu\.be)/\S+$",
+    r"^(?:https?://)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)/.+",
     re.IGNORECASE,
 )
 
+# Telegram Bot API upload limit is commonly 50 MB for bots.
+# Keep a small safety margin so multipart overhead does not cause a failure.
+MAX_TELEGRAM_AUDIO_BYTES = 49 * 1024 * 1024
+
 
 def format_bytes(size):
-    if not size:
+    if size is None:
         return "Unknown"
 
     units = ["B", "KB", "MB", "GB", "TB"]
     size = float(size)
-
     for unit in units:
         if size < 1024 or unit == units[-1]:
             return f"{size:.1f} {unit}"
         size /= 1024
-
-
-def is_youtube_url(text):
-    """Accept normal YouTube URLs, short links, query parameters and paths."""
-    if not text:
-        return False
-    return bool(YOUTUBE_REGEX.match(text.strip()))
+    return f"{size:.1f} TB"
 
 
 async def safe_edit(message, text):
@@ -63,34 +57,35 @@ async def safe_edit(message, text):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"🎵 Audio Bot v{MODEL_VERSION}\n\n"
+        f"🎵 Audio Bot v{MODEL_VERSION} is online.\n\n"
         "Send me a YouTube video link and I'll extract the audio as an MP3.\n\n"
         "Please only download content you own or are authorized to download."
     )
 
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
+async def version_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"🤖 Audio Bot version: v{MODEL_VERSION}\n"
+        "✅ Container is running."
+    )
 
-    # Deployment/version health check. This makes it immediately obvious which
-    # code version is answering after a redeploy.
-    if re.fullmatch(r"(hey|hello|hii|hi|helo|hlo)[!. ]*", text, re.IGNORECASE):
+
+async def greeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"👋 Hey! Audio Bot v{MODEL_VERSION} is online and running."
+    )
+
+
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+
+    if not YOUTUBE_REGEX.match(url):
         await update.message.reply_text(
-            f"👋 Hey! Audio Bot v{MODEL_VERSION} is online and running."
+            f"❌ Please send a valid YouTube link.\n\n"
+            f"🤖 Audio Bot v{MODEL_VERSION}"
         )
         return
 
-    if not is_youtube_url(text):
-        await update.message.reply_text(
-            "❌ Please send a valid YouTube link.\n\n"
-            f"🤖 Running model version: v{MODEL_VERSION}"
-        )
-        return
-
-    await process_youtube(update, text)
-
-
-async def process_youtube(update: Update, url: str):
     status_message = await update.message.reply_text(
         f"🔍 Checking the link...\n🤖 v{MODEL_VERSION}"
     )
@@ -117,7 +112,7 @@ async def process_youtube(update: Update, url: str):
         percent = data.get("_percent_str", "").strip()
 
         text = (
-            f"⬇️ Downloading...  •  v{MODEL_VERSION}\n"
+            f"⬇️ Downloading... (v{MODEL_VERSION})\n"
             f"Progress: {percent or 'Calculating...'}\n"
             f"Downloaded: {format_bytes(downloaded)}"
         )
@@ -136,76 +131,63 @@ async def process_youtube(update: Update, url: str):
         output_template = str(DOWNLOAD_DIR / "%(id)s.%(ext)s")
 
         ydl_opts = {
-            # Download the best available audio stream. There is deliberately
-            # no filesize cap here; the final Telegram upload is checked after
-            # conversion.
             "format": "bestaudio/best",
             "noplaylist": True,
             "outtmpl": output_template,
             "quiet": True,
             "no_warnings": True,
-            "progress_hooks": [progress_hook],
-            # YouTube's current JS challenges are handled by yt-dlp-ejs plus
-            # the Node runtime installed in the container.
             "js_runtimes": {"node": {}},
-            "postprocessors": [
-                {
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "128",
-                }
-            ],
+            "progress_hooks": [progress_hook],
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             video_id = info["id"]
             title = info.get("title", "audio")
-            duration = info.get("duration") or 0
-            return DOWNLOAD_DIR / f"{video_id}.mp3", title, duration
+            return DOWNLOAD_DIR / f"{video_id}.mp3", title
 
     audio_path = None
 
     try:
         await safe_edit(
             status_message,
-            f"⬇️ Starting download...\n🤖 Audio Bot v{MODEL_VERSION}",
+            f"⬇️ Starting download...\n🤖 v{MODEL_VERSION}",
         )
-        audio_path, title, duration = await asyncio.to_thread(download_audio)
+
+        audio_path, title = await asyncio.to_thread(download_audio)
 
         if not audio_path.exists():
             raise FileNotFoundError("The audio file was not created.")
 
-        file_size = audio_path.stat().st_size
-
-        if file_size > SAFE_UPLOAD_LIMIT:
-            await safe_edit(
-                status_message,
-                "⚠️ The extracted MP3 is too large for Telegram's bot upload "
-                "limit.\n\n"
-                f"Size: {format_bytes(file_size)}\n"
-                f"Safe limit: {format_bytes(SAFE_UPLOAD_LIMIT)}\n\n"
-                "Try a shorter video.",
+        size = audio_path.stat().st_size
+        if size > MAX_TELEGRAM_AUDIO_BYTES:
+            raise ValueError(
+                f"Final MP3 is {format_bytes(size)}, above the safe Telegram "
+                f"upload limit of {format_bytes(MAX_TELEGRAM_AUDIO_BYTES)}."
             )
-            return
 
         await safe_edit(
             status_message,
-            f"📤 Uploading {format_bytes(file_size)}...\n"
-            f"🤖 Audio Bot v{MODEL_VERSION}",
+            f"📤 Uploading {format_bytes(size)} to Telegram...\n"
+            f"🤖 v{MODEL_VERSION}",
         )
 
-        safe_title = re.sub(r"[\x00-\x1f\x7f]", "", title).strip()[:64] or "audio"
+        safe_title = re.sub(r"[\r\n]+", " ", title).strip()[:64] or "audio"
 
         with open(audio_path, "rb") as audio:
             await update.message.reply_audio(
                 audio=audio,
                 title=safe_title,
                 filename=f"{safe_title[:50]}.mp3",
-                read_timeout=180,
-                write_timeout=180,
-                connect_timeout=30,
-                pool_timeout=30,
+                read_timeout=300,
+                write_timeout=300,
+                connect_timeout=60,
+                pool_timeout=60,
             )
 
         await safe_edit(
@@ -213,34 +195,65 @@ async def process_youtube(update: Update, url: str):
             f"✅ Done!\n🤖 Audio Bot v{MODEL_VERSION}",
         )
         await asyncio.sleep(2)
+
         try:
             await status_message.delete()
         except Exception:
             pass
 
-    except BadRequest as error:
-        print(f"Telegram upload error: {error}")
-        await safe_edit(
-            status_message,
-            "❌ Telegram rejected the media upload.\n"
-            "The file may be beyond Telegram's bot upload limit.\n\n"
-            f"🤖 Audio Bot v{MODEL_VERSION}",
-        )
     except Exception as error:
-        print(f"Processing error ({type(error).__name__}): {error}")
-        await safe_edit(
-            status_message,
-            "❌ I couldn't process this YouTube link.\n\n"
-            "Possible causes: YouTube availability, an unsupported video, "
-            "a temporary downloader error, or a Telegram upload limit.\n\n"
-            f"🤖 Audio Bot v{MODEL_VERSION}",
-        )
+        print(f"Processing error: {type(error).__name__}: {error}")
+
+        if isinstance(error, ValueError) and "above the safe Telegram" in str(error):
+            message = (
+                f"❌ The converted MP3 is too large for Telegram.\n\n"
+                f"Size: {format_bytes(audio_path.stat().st_size) if audio_path and audio_path.exists() else 'Unknown'}\n"
+                f"Safe limit: {format_bytes(MAX_TELEGRAM_AUDIO_BYTES)}\n\n"
+                f"🤖 Audio Bot v{MODEL_VERSION}"
+            )
+        else:
+            message = (
+                "❌ Sorry, I couldn't process this link.\n"
+                "It may be unavailable, unsupported, blocked by YouTube, "
+                "or too large for Telegram.\n\n"
+                f"🤖 Audio Bot v{MODEL_VERSION}"
+            )
+
+        await safe_edit(status_message, message)
+
     finally:
         if audio_path and audio_path.exists():
             try:
                 audio_path.unlink()
             except Exception as cleanup_error:
                 print(f"Cleanup error: {cleanup_error}")
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ("/", "/health", "/healthz"):
+            body = (
+                f'{{"status":"ok","version":"{MODEL_VERSION}",'
+                f'"service":"telegram-youtube-audio-bot"}}'
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_health_server():
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"Health server listening on 0.0.0.0:{PORT}")
 
 
 def cleanup_download_directory():
@@ -263,29 +276,26 @@ def main():
         raise ValueError("BOT_TOKEN environment variable is not set.")
 
     cleanup_download_directory()
+    start_health_server()
 
-    # Large uploads need longer HTTPX timeouts than the defaults.
-    request = HTTPXRequest(
-        connect_timeout=30,
-        read_timeout=180,
-        write_timeout=180,
-        pool_timeout=30,
-    )
-
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .request(request)
-        .build()
-    )
-
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("version", version_command))
     app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
+        MessageHandler(
+            filters.Regex(re.compile(r"^\s*(?:hey|hello|hii|hi)\s*[!.]?\s*$", re.I)),
+            greeting,
+        )
+    )
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link)
     )
 
     print(f"🤖 Audio Bot v{MODEL_VERSION} is running...")
-    app.run_polling()
+    app.run_polling(
+        drop_pending_updates=False,
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 
 if __name__ == "__main__":
