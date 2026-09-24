@@ -13,35 +13,16 @@ import yt_dlp
 # CONFIGURATION
 # ============================================================
 
-MAX_FILE_SIZE_MB = int(
-    os.getenv("MAX_FILE_SIZE_MB", "49")
-)
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "49"))
+MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
-MAX_FILE_SIZE_BYTES = (
-    MAX_FILE_SIZE_MB * 1024 * 1024
-)
+MAX_DURATION = int(os.getenv("MAX_DURATION", "7200"))
+DOWNLOAD_TIMEOUT = int(os.getenv("DOWNLOAD_TIMEOUT", "600"))
 
-MAX_DURATION = int(
-    os.getenv("MAX_DURATION", "7200")
-)
+AUDIO_OUTPUT = os.getenv("AUDIO_OUTPUT", "mp3").lower()
+AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "192")
 
-DOWNLOAD_TIMEOUT = int(
-    os.getenv("DOWNLOAD_TIMEOUT", "600")
-)
-
-AUDIO_OUTPUT = os.getenv(
-    "AUDIO_OUTPUT",
-    "mp3"
-).lower()
-
-AUDIO_QUALITY = os.getenv(
-    "AUDIO_QUALITY",
-    "192"
-)
-
-DOWNLOAD_RETRIES = int(
-    os.getenv("DOWNLOAD_RETRIES", "3")
-)
+DOWNLOAD_RETRIES = int(os.getenv("DOWNLOAD_RETRIES", "3"))
 
 
 # ============================================================
@@ -68,36 +49,14 @@ class VideoUnavailableError(DownloadError):
 # HELPERS
 # ============================================================
 
-def sanitize_filename(
-    filename: str,
-    max_length: int = 120,
-) -> str:
+def sanitize_filename(filename: str, max_length: int = 120) -> str:
+    filename = str(filename or "audio")
 
-    filename = str(
-        filename or "audio"
-    )
+    filename = re.sub(r"[\x00-\x1f\x7f]", "", filename)
+    filename = re.sub(r'[\\/:*?"<>|]+', "_", filename)
+    filename = re.sub(r"\s+", " ", filename)
 
-    filename = re.sub(
-        r"[\x00-\x1f\x7f]",
-        "",
-        filename,
-    )
-
-    filename = re.sub(
-        r'[\\/:*?"<>|]+',
-        "_",
-        filename,
-    )
-
-    filename = re.sub(
-        r"\s+",
-        " ",
-        filename,
-    )
-
-    filename = filename.strip(
-        " ."
-    )
+    filename = filename.strip(" .")
 
     if not filename:
         filename = "audio"
@@ -106,36 +65,21 @@ def sanitize_filename(
 
 
 def ensure_ffmpeg():
-
     if not shutil.which("ffmpeg"):
-
         raise DownloadError(
             "FFmpeg is not installed on the server."
         )
 
 
-def format_bytes(
-    size: Optional[int],
-) -> str:
-
+def format_bytes(size: Optional[int]) -> str:
     if size is None:
         return "Unknown"
 
     size = float(size)
 
-    for unit in (
-        "B",
-        "KB",
-        "MB",
-        "GB",
-        "TB",
-    ):
-
+    for unit in ("B", "KB", "MB", "GB", "TB"):
         if size < 1024:
-
-            return (
-                f"{size:.1f} {unit}"
-            )
+            return f"{size:.1f} {unit}"
 
         size /= 1024
 
@@ -148,25 +92,16 @@ def format_bytes(
 
 class ProgressTracker:
 
-    def __init__(
-        self,
-        callback=None,
-    ):
-
+    def __init__(self, callback=None):
         self.callback = callback
         self.last_percent = -1
 
-    def hook(
-        self,
-        data,
-    ):
+    def hook(self, data):
 
         if not self.callback:
             return
 
-        status = data.get(
-            "status"
-        )
+        status = data.get("status")
 
         if status == "downloading":
 
@@ -176,74 +111,51 @@ class ProgressTracker:
             )
 
             total = (
-                data.get(
-                    "total_bytes"
-                )
-                or data.get(
-                    "total_bytes_estimate"
-                )
+                data.get("total_bytes")
+                or data.get("total_bytes_estimate")
             )
 
             percent = None
 
             if total:
-
-                percent = (
-                    downloaded
-                    / total
-                    * 100
-                )
+                percent = downloaded / total * 100
 
                 percent = max(
                     0,
-                    min(
-                        100,
-                        percent,
-                    ),
+                    min(100, percent),
                 )
 
             if (
                 percent is not None
                 and (
                     self.last_percent < 0
-                    or percent
-                    - self.last_percent >= 2
+                    or percent - self.last_percent >= 2
                     or percent >= 99
                 )
             ):
 
                 self.last_percent = percent
 
-                self.callback(
-                    {
-                        "status": "Downloading",
-                        "percent": percent,
-                        "downloaded_bytes":
-                            downloaded,
-                        "total_bytes":
-                            total,
-                    }
-                )
+                self.callback({
+                    "status": "Downloading",
+                    "percent": percent,
+                    "downloaded_bytes": downloaded,
+                    "total_bytes": total,
+                })
 
         elif status == "finished":
 
-            self.callback(
-                {
-                    "status":
-                        "Download complete",
-                    "percent": 100,
-                }
-            )
+            self.callback({
+                "status": "Download complete",
+                "percent": 100,
+            })
 
         elif status == "error":
 
-            self.callback(
-                {
-                    "status":
-                        "Download failed",
-                    "percent": None,
-                }
-            )
+            self.callback({
+                "status": "Download failed",
+                "percent": None,
+            })
 
 
 # ============================================================
@@ -252,41 +164,18 @@ class ProgressTracker:
 
 class YTDLPLogger:
 
-    def debug(
-        self,
-        message,
-    ):
+    def debug(self, message):
 
-        if message.startswith(
-            "[debug]"
-        ):
-
+        if message.startswith("[debug]"):
             return
 
-        print(
-            "yt-dlp:",
-            message,
-        )
+        print("yt-dlp:", message)
 
-    def warning(
-        self,
-        message,
-    ):
+    def warning(self, message):
+        print("yt-dlp warning:", message)
 
-        print(
-            "yt-dlp warning:",
-            message,
-        )
-
-    def error(
-        self,
-        message,
-    ):
-
-        print(
-            "yt-dlp error:",
-            message,
-        )
+    def error(self, message):
+        print("yt-dlp error:", message)
 
 
 # ============================================================
@@ -299,8 +188,7 @@ def build_ydl_options(
 ):
 
     output_template = str(
-        output_dir
-        / "%(id)s.%(ext)s"
+        output_dir / "%(id)s.%(ext)s"
     )
 
     return {
@@ -314,49 +202,31 @@ def build_ydl_options(
             "bestaudio[ext=webm]/"
             "bestaudio/best",
 
-        "outtmpl":
-            output_template,
+        "outtmpl": output_template,
 
-        "noplaylist":
-            True,
+        "noplaylist": True,
 
         # ----------------------------------------------------
         # OUTPUT
         # ----------------------------------------------------
 
-        "quiet":
-            True,
-
-        "no_warnings":
-            False,
-
-        "ignoreerrors":
-            False,
+        "quiet": True,
+        "no_warnings": False,
+        "ignoreerrors": False,
 
         # ----------------------------------------------------
         # RETRIES
         # ----------------------------------------------------
 
-        "retries":
-            DOWNLOAD_RETRIES,
+        "retries": DOWNLOAD_RETRIES,
+        "fragment_retries": DOWNLOAD_RETRIES,
+        "file_access_retries": DOWNLOAD_RETRIES,
+        "extractor_retries": DOWNLOAD_RETRIES,
 
-        "fragment_retries":
-            DOWNLOAD_RETRIES,
+        "socket_timeout": 30,
 
-        "file_access_retries":
-            DOWNLOAD_RETRIES,
-
-        "extractor_retries":
-            DOWNLOAD_RETRIES,
-
-        "socket_timeout":
-            30,
-
-        "continuedl":
-            True,
-
-        "overwrites":
-            True,
+        "continuedl": True,
+        "overwrites": True,
 
         # ----------------------------------------------------
         # PROGRESS
@@ -370,11 +240,8 @@ def build_ydl_options(
         # METADATA
         # ----------------------------------------------------
 
-        "writethumbnail":
-            True,
-
-        "addmetadata":
-            True,
+        "writethumbnail": True,
+        "addmetadata": True,
 
         # ----------------------------------------------------
         # POST PROCESSING
@@ -383,24 +250,17 @@ def build_ydl_options(
         "postprocessors": [
 
             {
-                "key":
-                    "FFmpegExtractAudio",
-
-                "preferredcodec":
-                    AUDIO_OUTPUT,
-
-                "preferredquality":
-                    AUDIO_QUALITY,
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": AUDIO_OUTPUT,
+                "preferredquality": AUDIO_QUALITY,
             },
 
             {
-                "key":
-                    "FFmpegMetadata",
+                "key": "FFmpegMetadata",
             },
 
             {
-                "key":
-                    "EmbedThumbnail",
+                "key": "EmbedThumbnail",
             },
         ],
 
@@ -409,7 +269,9 @@ def build_ydl_options(
         # ----------------------------------------------------
 
         "extractor_args": {
+
             "youtubepot-bgutilhttp": {
+
                 "base_url":
                     "http://127.0.0.1:4416"
             }
@@ -417,11 +279,28 @@ def build_ydl_options(
 
         # ----------------------------------------------------
         # JAVASCRIPT RUNTIME
+        #
+        # IMPORTANT:
+        # yt-dlp Python API expects:
+        #
+        # runtime -> configuration dictionary
         # ----------------------------------------------------
 
         "js_runtimes": {
-            "deno":
-                "/root/.deno/bin/deno"
+
+            "deno": {
+
+                "path":
+                    "/root/.deno/bin/deno"
+            }
+        },
+
+        # ----------------------------------------------------
+        # REMOTE EJS COMPONENTS
+        # ----------------------------------------------------
+
+        "remote_components": {
+            "ejs:npm"
         },
 
         # ----------------------------------------------------
@@ -442,8 +321,7 @@ def build_ydl_options(
         # LOGGER
         # ----------------------------------------------------
 
-        "logger":
-            YTDLPLogger(),
+        "logger": YTDLPLogger(),
     }
 
 
@@ -451,21 +329,15 @@ def build_ydl_options(
 # ERROR CLASSIFICATION
 # ============================================================
 
-def classify_download_error(
-    error,
-):
+def classify_download_error(error):
 
-    message = str(
-        error
-    )
-
+    message = str(error)
     lowered = message.lower()
 
     if (
         "private video" in lowered
         or "video unavailable" in lowered
-        or "this video is not available"
-        in lowered
+        or "this video is not available" in lowered
     ):
 
         return VideoUnavailableError(
@@ -516,16 +388,11 @@ def classify_download_error(
 # EXTRACT INFORMATION
 # ============================================================
 
-def extract_info(
-    url: str,
-    options: dict,
-):
+def extract_info(url: str, options: dict):
 
     try:
 
-        with yt_dlp.YoutubeDL(
-            options
-        ) as ydl:
+        with yt_dlp.YoutubeDL(options) as ydl:
 
             info = ydl.extract_info(
                 url,
@@ -543,9 +410,7 @@ def extract_info(
 
     except yt_dlp.utils.DownloadError as error:
 
-        raise classify_download_error(
-            error
-        ) from error
+        raise classify_download_error(error) from error
 
 
 # ============================================================
@@ -638,14 +503,12 @@ def cleanup_related_files(
             if file.name.startswith(
                 f"{video_id}."
             ):
-
                 delete = True
 
         if (
             file.suffix.lower()
             in temporary_extensions
         ):
-
             delete = True
 
         if delete:
@@ -678,14 +541,6 @@ def download_sync(
         exist_ok=True,
     )
 
-    # --------------------------------------------------------
-    # ISOLATED JOB DIRECTORY
-    #
-    # Every request gets its own directory.
-    # This prevents concurrent downloads from interfering
-    # with each other.
-    # --------------------------------------------------------
-
     job_dir = Path(
         tempfile.mkdtemp(
             prefix="job_",
@@ -711,10 +566,7 @@ def download_sync(
         "============================================"
     )
 
-    print(
-        "YouTube download:"
-    )
-
+    print("YouTube download:")
     print(url)
 
     print(
@@ -732,22 +584,14 @@ def download_sync(
             options,
         )
 
-        duration = info.get(
-            "duration"
-        )
-
-        # ----------------------------------------------------
-        # DURATION LIMIT
-        # ----------------------------------------------------
+        duration = info.get("duration")
 
         if (
             duration
             and duration > MAX_DURATION
         ):
 
-            max_minutes = (
-                MAX_DURATION // 60
-            )
+            max_minutes = MAX_DURATION // 60
 
             raise DurationTooLongError(
                 f"This audio is too long. "
@@ -792,20 +636,9 @@ def download_sync(
             or "audio"
         )
 
-        print(
-            "Title:",
-            title,
-        )
-
-        print(
-            "Artist:",
-            artist,
-        )
-
-        print(
-            "Video ID:",
-            video_id,
-        )
+        print("Title:", title)
+        print("Artist:", artist)
+        print("Video ID:", video_id)
 
         # ----------------------------------------------------
         # DOWNLOAD
@@ -813,13 +646,9 @@ def download_sync(
 
         try:
 
-            with yt_dlp.YoutubeDL(
-                options
-            ) as ydl:
+            with yt_dlp.YoutubeDL(options) as ydl:
 
-                ydl.download(
-                    [url]
-                )
+                ydl.download([url])
 
         except yt_dlp.utils.DownloadError as error:
 
@@ -847,9 +676,7 @@ def download_sync(
         # FILE SIZE
         # ----------------------------------------------------
 
-        file_size = (
-            audio_path.stat().st_size
-        )
+        file_size = audio_path.stat().st_size
 
         print(
             "Final file:",
@@ -882,9 +709,7 @@ def download_sync(
             90,
         )
 
-        extension = (
-            audio_path.suffix.lower()
-        )
+        extension = audio_path.suffix.lower()
 
         final_path = (
             job_dir
@@ -962,17 +787,11 @@ def download_sync(
             "quality":
                 AUDIO_QUALITY,
 
-            # Important:
-            # bot.py uses this to delete the entire
-            # isolated job directory after upload.
             "job_dir":
                 str(job_dir),
         }
 
     except Exception:
-
-        # If download fails before returning the result,
-        # remove this job immediately.
 
         try:
 
