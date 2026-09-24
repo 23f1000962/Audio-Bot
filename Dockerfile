@@ -1,9 +1,5 @@
 FROM python:3.13-slim
 
-# ============================================================
-# ENVIRONMENT
-# ============================================================
-
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
@@ -14,11 +10,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-
-# ============================================================
-# SYSTEM DEPENDENCIES
-# ============================================================
-
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -28,29 +19,15 @@ RUN apt-get update && \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-
-# ============================================================
-# INSTALL DENO
-# ============================================================
-
-RUN curl -fsSL https://deno.land/install.sh | sh
-
-RUN deno --version
-
-
-# ============================================================
-# PYTHON DEPENDENCIES
-# ============================================================
+# Install Deno
+RUN curl -fsSL https://deno.land/install.sh | sh && \
+    deno upgrade --version 2.9.7 && \
+    deno --version
 
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-
-# ============================================================
-# INSTALL BGUTIL PO TOKEN PROVIDER SERVER
-# ============================================================
-
+# Install BGUTIL PO Token Provider
 RUN git clone \
         --single-branch \
         --branch 2.0.0 \
@@ -58,22 +35,11 @@ RUN git clone \
         https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
         ${BGUTIL_HOME}
 
-
 WORKDIR ${BGUTIL_HOME}/server
-
-
-# ============================================================
-# INSTALL BGUTIL JAVASCRIPT DEPENDENCIES
-# ============================================================
 
 RUN deno install \
         --allow-scripts=npm:canvas \
         --frozen
-
-
-# ============================================================
-# APPLICATION
-# ============================================================
 
 WORKDIR /app
 
@@ -83,28 +49,13 @@ COPY start.sh .
 
 RUN chmod +x /app/start.sh
 
-
-# ============================================================
-# DOWNLOAD DIRECTORY
-# ============================================================
-
 RUN mkdir -p /app/downloads && \
     chmod 755 /app/downloads
-
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
 
 HEALTHCHECK --interval=30s \
     --timeout=10s \
     --start-period=45s \
     --retries=3 \
     CMD curl -f http://localhost:${PORT}/healthz || exit 1
-
-
-# ============================================================
-# START
-# ============================================================
 
 CMD ["/app/start.sh"]
