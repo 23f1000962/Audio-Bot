@@ -3,7 +3,7 @@ import re
 import asyncio
 import shutil
 from pathlib import Path
-from typing import Optional, Callable, Awaitable
+from typing import Optional
 
 import yt_dlp
 
@@ -48,30 +48,22 @@ DOWNLOAD_RETRIES = int(
 # ============================================================
 
 class DownloadError(Exception):
-    """
-    General downloader error.
-    """
+    """General downloader error."""
     pass
 
 
 class FileTooLargeError(DownloadError):
-    """
-    Downloaded file exceeds Telegram/file-size limit.
-    """
+    """Downloaded file exceeds configured file-size limit."""
     pass
 
 
 class DurationTooLongError(DownloadError):
-    """
-    Video duration exceeds configured limit.
-    """
+    """Video duration exceeds configured limit."""
     pass
 
 
 class VideoUnavailableError(DownloadError):
-    """
-    Video is unavailable/private/restricted.
-    """
+    """Video is unavailable/private/restricted."""
     pass
 
 
@@ -113,9 +105,7 @@ def sanitize_filename(
     if not filename:
         filename = "audio"
 
-    return filename[
-        :max_length
-    ]
+    return filename[:max_length]
 
 
 def ensure_ffmpeg():
@@ -125,7 +115,6 @@ def ensure_ffmpeg():
     )
 
     if not ffmpeg_path:
-
         raise DownloadError(
             "FFmpeg is not installed on the server."
         )
@@ -161,7 +150,7 @@ def format_bytes(
 
 
 # ============================================================
-# PROGRESS HOOK
+# PROGRESS TRACKER
 # ============================================================
 
 class ProgressTracker:
@@ -172,7 +161,6 @@ class ProgressTracker:
     ):
 
         self.callback = callback
-
         self.last_percent = -1
 
     def hook(
@@ -205,8 +193,7 @@ class ProgressTracker:
             if total:
 
                 percent = (
-                    downloaded
-                    / total
+                    downloaded / total
                 ) * 100
 
                 percent = max(
@@ -285,7 +272,6 @@ class ProgressTracker:
                     )
 
                 except RuntimeError:
-
                     pass
 
         except Exception as error:
@@ -294,120 +280,6 @@ class ProgressTracker:
                 "Progress callback error:",
                 error,
             )
-
-
-# ============================================================
-# URL OPTIONS
-# ============================================================
-
-def build_ydl_options(
-    output_dir: Path,
-    progress_tracker: ProgressTracker,
-):
-
-    output_template = str(
-        output_dir
-        / "%(id)s.%(ext)s"
-    )
-
-    # --------------------------------------------------------
-    # Best available audio
-    # --------------------------------------------------------
-    #
-    # Prefer audio-only formats.
-    #
-    # `bestaudio/best` allows yt-dlp to fall back when a
-    # separate audio stream is unavailable.
-    #
-    # --------------------------------------------------------
-
-    options = {
-
-        "format": (
-            "bestaudio[ext=m4a]/"
-            "bestaudio[ext=webm]/"
-            "bestaudio/"
-            "best"
-        ),
-
-        "outtmpl": output_template,
-
-        "noplaylist": True,
-
-        "quiet": True,
-
-        "no_warnings": True,
-
-        "ignoreerrors": False,
-
-        "retries": DOWNLOAD_RETRIES,
-
-        "fragment_retries": DOWNLOAD_RETRIES,
-
-        "file_access_retries": DOWNLOAD_RETRIES,
-
-        "extractor_retries": DOWNLOAD_RETRIES,
-
-        "socket_timeout": 30,
-
-        "continuedl": True,
-
-        "overwrites": True,
-
-        "progress_hooks": [
-            progress_tracker.hook
-        ],
-
-        "restrictfilenames": False,
-
-        "windowsfilenames": True,
-
-        "writethumbnail": True,
-
-        "writeinfojson": False,
-
-        "noplaylist": True,
-
-        "extract_flat": False,
-
-        # Metadata
-        "postprocessors": [
-
-            {
-                "key": "FFmpegExtractAudio",
-
-                "preferredcodec": AUDIO_OUTPUT,
-
-                "preferredquality": AUDIO_QUALITY,
-            },
-
-            {
-                "key": "FFmpegMetadata",
-            },
-
-            {
-                "key": "EmbedThumbnail",
-            },
-        ],
-
-        # Better metadata
-        "addmetadata": True,
-
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/140.0 Safari/537.36"
-            ),
-        },
-
-        "logger": YTDLPLogger(),
-
-    }
-
-    return options
 
 
 # ============================================================
@@ -453,6 +325,179 @@ class YTDLPLogger:
 
 
 # ============================================================
+# YT-DLP OPTIONS
+# ============================================================
+
+def build_ydl_options(
+    output_dir: Path,
+    progress_tracker: ProgressTracker,
+):
+
+    output_template = str(
+        output_dir
+        / "%(id)s.%(ext)s"
+    )
+
+    options = {
+
+        # ----------------------------------------------------
+        # BEST AVAILABLE AUDIO
+        # ----------------------------------------------------
+
+        "format": (
+            "bestaudio[ext=m4a]/"
+            "bestaudio[ext=webm]/"
+            "bestaudio/"
+            "best"
+        ),
+
+        "outtmpl": output_template,
+
+        "noplaylist": True,
+
+        "quiet": True,
+
+        "no_warnings": True,
+
+        "ignoreerrors": False,
+
+        # ----------------------------------------------------
+        # RETRIES
+        # ----------------------------------------------------
+
+        "retries": DOWNLOAD_RETRIES,
+
+        "fragment_retries": DOWNLOAD_RETRIES,
+
+        "file_access_retries": DOWNLOAD_RETRIES,
+
+        "extractor_retries": DOWNLOAD_RETRIES,
+
+        "socket_timeout": 30,
+
+        "continuedl": True,
+
+        "overwrites": True,
+
+        # ----------------------------------------------------
+        # PROGRESS
+        # ----------------------------------------------------
+
+        "progress_hooks": [
+            progress_tracker.hook
+        ],
+
+        # ----------------------------------------------------
+        # FILENAMES
+        # ----------------------------------------------------
+
+        "restrictfilenames": False,
+
+        "windowsfilenames": True,
+
+        # ----------------------------------------------------
+        # THUMBNAIL + METADATA
+        # ----------------------------------------------------
+
+        "writethumbnail": True,
+
+        "writeinfojson": False,
+
+        "addmetadata": True,
+
+        # ----------------------------------------------------
+        # POST PROCESSING
+        # ----------------------------------------------------
+
+        "postprocessors": [
+
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": AUDIO_OUTPUT,
+                "preferredquality": AUDIO_QUALITY,
+            },
+
+            {
+                "key": "FFmpegMetadata",
+            },
+
+            {
+                "key": "EmbedThumbnail",
+            },
+
+        ],
+
+        # ----------------------------------------------------
+        # HTTP HEADERS
+        # ----------------------------------------------------
+
+        "http_headers": {
+
+            "User-Agent": (
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/140.0 Safari/537.36"
+            ),
+
+        },
+
+        # ----------------------------------------------------
+        # LOGGER
+        # ----------------------------------------------------
+
+        "logger": YTDLPLogger(),
+
+    }
+
+    return options
+
+
+# ============================================================
+# ERROR CLASSIFICATION
+# ============================================================
+
+def classify_download_error(
+    error,
+):
+    """
+    Convert yt-dlp errors into cleaner bot errors.
+    """
+
+    message = str(
+        error
+    )
+
+    lowered = message.lower()
+
+    restricted_keywords = [
+        "private video",
+        "video unavailable",
+        "sign in",
+        "members-only",
+        "age-restricted",
+        "this video is not available",
+        "confirm your age",
+    ]
+
+    if any(
+        keyword in lowered
+        for keyword in restricted_keywords
+    ):
+
+        return VideoUnavailableError(
+            "This YouTube video is unavailable, "
+            "private, restricted, age-restricted, "
+            "or requires authentication."
+        )
+
+    return DownloadError(
+        message[:700]
+    )
+
+
+# ============================================================
 # EXTRACT VIDEO INFORMATION
 # ============================================================
 
@@ -482,36 +527,154 @@ def extract_info(
 
     except yt_dlp.utils.DownloadError as error:
 
-        message = str(
+        raise classify_download_error(
             error
-        )
-
-        lowered = message.lower()
-
-        if any(
-            word in lowered
-            for word in [
-                "private video",
-                "video unavailable",
-                "sign in",
-                "members-only",
-                "age-restricted",
-            ]
-        ):
-
-            raise VideoUnavailableError(
-                "This YouTube video is unavailable, "
-                "private, restricted, or requires "
-                "authentication."
-            ) from error
-
-        raise DownloadError(
-            f"YouTube extraction failed: {message[:500]}"
         ) from error
 
 
 # ============================================================
-# DOWNLOAD
+# FIND GENERATED FILES
+# ============================================================
+
+def find_audio_file(
+    output_dir: Path,
+    video_id: str,
+):
+
+    candidates = []
+
+    # --------------------------------------------------------
+    # First try exact video ID
+    # --------------------------------------------------------
+
+    for file in output_dir.iterdir():
+
+        if not file.is_file():
+            continue
+
+        if file.name.startswith(
+            f"{video_id}."
+        ):
+
+            if file.suffix.lower() in {
+                ".mp3",
+                ".m4a",
+                ".aac",
+                ".opus",
+                ".ogg",
+                ".wav",
+                ".flac",
+                ".webm",
+            }:
+
+                candidates.append(
+                    file
+                )
+
+    # --------------------------------------------------------
+    # Fallback: search all supported audio files
+    # --------------------------------------------------------
+
+    if not candidates:
+
+        candidates = [
+
+            file
+
+            for file in output_dir.iterdir()
+
+            if (
+                file.is_file()
+                and file.suffix.lower()
+                in {
+                    ".mp3",
+                    ".m4a",
+                    ".aac",
+                    ".opus",
+                    ".ogg",
+                    ".wav",
+                    ".flac",
+                    ".webm",
+                }
+            )
+
+        ]
+
+    if not candidates:
+
+        return None
+
+    # Newest generated file
+    return max(
+        candidates,
+        key=lambda file:
+        file.stat().st_mtime,
+    )
+
+
+# ============================================================
+# CLEAN TEMPORARY FILES
+# ============================================================
+
+def cleanup_related_files(
+    output_dir: Path,
+    video_id: Optional[str] = None,
+    keep: Optional[Path] = None,
+):
+
+    if not output_dir.exists():
+        return
+
+    temporary_extensions = {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".part",
+        ".ytdl",
+        ".temp",
+        ".json",
+    }
+
+    for file in output_dir.iterdir():
+
+        if not file.is_file():
+            continue
+
+        # Never delete the final audio here
+        if keep and file.resolve() == keep.resolve():
+            continue
+
+        should_delete = False
+
+        if video_id:
+
+            if file.name.startswith(
+                f"{video_id}."
+            ):
+
+                should_delete = True
+
+        if file.suffix.lower() in temporary_extensions:
+
+            should_delete = True
+
+        if should_delete:
+
+            try:
+
+                file.unlink()
+
+            except Exception as error:
+
+                print(
+                    "Temporary cleanup error:",
+                    error,
+                )
+
+
+# ============================================================
+# DOWNLOAD SYNCHRONOUSLY
 # ============================================================
 
 def download_sync(
@@ -527,10 +690,8 @@ def download_sync(
         exist_ok=True,
     )
 
-    progress_tracker = (
-        ProgressTracker(
-            progress_callback
-        )
+    progress_tracker = ProgressTracker(
+        progress_callback
     )
 
     options = build_ydl_options(
@@ -543,9 +704,9 @@ def download_sync(
         url,
     )
 
-    # --------------------------------------------------------
-    # First obtain metadata
-    # --------------------------------------------------------
+    # ========================================================
+    # EXTRACT METADATA
+    # ========================================================
 
     info = extract_info(
         url,
@@ -556,80 +717,71 @@ def download_sync(
         "duration"
     )
 
+    # ========================================================
+    # DURATION CHECK
+    # ========================================================
+
     if (
         duration
         and duration > MAX_DURATION
     ):
 
+        hours = MAX_DURATION // 3600
+
+        minutes = (
+            MAX_DURATION % 3600
+        ) // 60
+
         raise DurationTooLongError(
             "This audio is too long.\n\n"
             f"Maximum allowed duration: "
-            f"{MAX_DURATION // 3600}h "
-            f"{(MAX_DURATION % 3600) // 60}m."
+            f"{hours}h {minutes}m."
         )
 
+    # ========================================================
+    # METADATA
+    # ========================================================
+
     title = (
-        info.get(
-            "track"
-        )
-        or info.get(
-            "title"
-        )
+        info.get("track")
+        or info.get("title")
         or "Audio"
     )
 
     artist = (
-        info.get(
-            "artist"
-        )
-        or info.get(
-            "creator"
-        )
-        or info.get(
-            "uploader"
-        )
+        info.get("artist")
+        or info.get("creator")
+        or info.get("uploader")
         or ""
     )
 
     album = (
-        info.get(
-            "album"
-        )
+        info.get("album")
         or ""
     )
 
     album_artist = (
-        info.get(
-            "album_artist"
-        )
+        info.get("album_artist")
         or artist
     )
 
     uploader = (
-        info.get(
-            "uploader"
-        )
+        info.get("uploader")
         or ""
     )
 
     thumbnail = (
-        info.get(
-            "thumbnail"
-        )
+        info.get("thumbnail")
         or ""
     )
 
     webpage_url = (
-        info.get(
-            "webpage_url"
-        )
+        info.get("webpage_url")
         or url
     )
 
     video_id = (
-        info.get(
-            "id"
-        )
+        info.get("id")
         or "audio"
     )
 
@@ -653,24 +805,18 @@ def download_sync(
         video_id,
     )
 
-    # --------------------------------------------------------
-    # Estimate filesize before downloading
-    # --------------------------------------------------------
-
-    requested_formats = (
-        info.get(
-            "requested_formats"
-        )
-        or []
-    )
+    # ========================================================
+    # ESTIMATE SOURCE SIZE
+    # ========================================================
 
     estimated_size = (
-        info.get(
-            "filesize"
-        )
-        or info.get(
-            "filesize_approx"
-        )
+        info.get("filesize")
+        or info.get("filesize_approx")
+    )
+
+    requested_formats = (
+        info.get("requested_formats")
+        or []
     )
 
     if not estimated_size:
@@ -678,12 +824,8 @@ def download_sync(
         for fmt in requested_formats:
 
             size = (
-                fmt.get(
-                    "filesize"
-                )
-                or fmt.get(
-                    "filesize_approx"
-                )
+                fmt.get("filesize")
+                or fmt.get("filesize_approx")
             )
 
             if size:
@@ -692,6 +834,7 @@ def download_sync(
                     estimated_size or 0
                 ) + size
 
+    # Conservative pre-download check.
     if (
         estimated_size
         and estimated_size
@@ -703,9 +846,9 @@ def download_sync(
             "to safely process for Telegram."
         )
 
-    # --------------------------------------------------------
-    # Download
-    # --------------------------------------------------------
+    # ========================================================
+    # DOWNLOAD
+    # ========================================================
 
     try:
 
@@ -719,83 +862,29 @@ def download_sync(
 
     except yt_dlp.utils.DownloadError as error:
 
-        message = str(
+        raise classify_download_error(
             error
-        )
-
-        lowered = message.lower()
-
-        if (
-            "private video" in lowered
-            or "video unavailable" in lowered
-            or "sign in" in lowered
-            or "members-only" in lowered
-        ):
-
-            raise VideoUnavailableError(
-                "This video is unavailable or restricted."
-            ) from error
-
-        raise DownloadError(
-            f"Audio download failed: {message[:600]}"
         ) from error
 
-    # --------------------------------------------------------
-    # Find resulting audio file
-    # --------------------------------------------------------
+    # ========================================================
+    # FIND FINAL AUDIO
+    # ========================================================
 
-    candidates = []
-
-    for file in output_dir.iterdir():
-
-        if not file.is_file():
-            continue
-
-        if file.name.startswith(
-            f"{video_id}."
-        ):
-
-            candidates.append(
-                file
-            )
-
-    # yt-dlp may use a different sanitized name.
-    if not candidates:
-
-        candidates = [
-            file
-            for file in output_dir.iterdir()
-            if file.is_file()
-            and file.suffix.lower()
-            in {
-                ".mp3",
-                ".m4a",
-                ".aac",
-                ".opus",
-                ".ogg",
-                ".wav",
-                ".flac",
-                ".webm",
-            }
-        ]
-
-    if not candidates:
-
-        raise DownloadError(
-            "yt-dlp completed but no audio file "
-            "was produced."
-        )
-
-    # Choose newest file.
-    audio_path = max(
-        candidates,
-        key=lambda file:
-        file.stat().st_mtime,
+    audio_path = find_audio_file(
+        output_dir,
+        video_id,
     )
 
-    # --------------------------------------------------------
-    # File size check
-    # --------------------------------------------------------
+    if not audio_path:
+
+        raise DownloadError(
+            "yt-dlp completed but no audio "
+            "file was produced."
+        )
+
+    # ========================================================
+    # FINAL FILE SIZE
+    # ========================================================
 
     file_size = (
         audio_path.stat().st_size
@@ -810,3 +899,225 @@ def download_sync(
         "Final size:",
         format_bytes(
             file_size
+        ),
+    )
+
+    # ========================================================
+    # FILE SIZE LIMIT
+    # ========================================================
+
+    if (
+        file_size
+        > MAX_FILE_SIZE_BYTES
+    ):
+
+        try:
+
+            audio_path.unlink()
+
+        except Exception:
+            pass
+
+        cleanup_related_files(
+            output_dir,
+            video_id,
+        )
+
+        raise FileTooLargeError(
+            "The final audio file is "
+            f"{format_bytes(file_size)}, "
+            "which exceeds the configured "
+            f"upload safety limit of "
+            f"{MAX_FILE_SIZE_MB} MB."
+        )
+
+    # ========================================================
+    # CLEAN / RENAME FINAL FILE
+    # ========================================================
+
+    clean_title = sanitize_filename(
+        title,
+        90,
+    )
+
+    extension = (
+        audio_path.suffix.lower()
+    )
+
+    final_name = (
+        f"{clean_title}{extension}"
+    )
+
+    final_path = (
+        output_dir / final_name
+    )
+
+    counter = 1
+
+    while (
+        final_path.exists()
+        and final_path != audio_path
+    ):
+
+        final_path = (
+            output_dir
+            / f"{clean_title} "
+            f"({counter}){extension}"
+        )
+
+        counter += 1
+
+    if final_path != audio_path:
+
+        try:
+
+            audio_path.rename(
+                final_path
+            )
+
+            audio_path = final_path
+
+        except Exception as error:
+
+            print(
+                "Rename failed:",
+                error,
+            )
+
+    # ========================================================
+    # FIND THUMBNAIL
+    # ========================================================
+
+    thumbnail_path = None
+
+    thumbnail_extensions = {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+    }
+
+    possible_thumbnails = [
+
+        file
+
+        for file in output_dir.iterdir()
+
+        if (
+            file.is_file()
+            and file.suffix.lower()
+            in thumbnail_extensions
+        )
+
+    ]
+
+    if possible_thumbnails:
+
+        thumbnail_path = max(
+            possible_thumbnails,
+            key=lambda file:
+            file.stat().st_mtime,
+        )
+
+    # ========================================================
+    # RETURN RESULT
+    # ========================================================
+
+    return {
+        "path": str(
+            audio_path
+        ),
+
+        "filename": (
+            audio_path.name
+        ),
+
+        "title": str(
+            title
+        ),
+
+        "artist": str(
+            artist
+        ),
+
+        "album": str(
+            album
+        ),
+
+        "album_artist": str(
+            album_artist
+        ),
+
+        "uploader": str(
+            uploader
+        ),
+
+        "duration": duration,
+
+        "thumbnail": (
+            str(thumbnail_path)
+            if thumbnail_path
+            else thumbnail
+        ),
+
+        "webpage_url": (
+            webpage_url
+        ),
+
+        "video_id": (
+            video_id
+        ),
+
+        "filesize": (
+            file_size
+        ),
+
+        "format": (
+            extension.lstrip(".")
+        ),
+
+        "quality": (
+            AUDIO_QUALITY
+        ),
+    }
+
+
+# ============================================================
+# ASYNC DOWNLOAD WRAPPER
+# ============================================================
+
+async def download_audio(
+    url: str,
+    output_dir: Path,
+    progress_callback=None,
+):
+
+    loop = asyncio.get_running_loop()
+
+    try:
+
+        return await asyncio.wait_for(
+
+            loop.run_in_executor(
+
+                None,
+
+                lambda:
+                download_sync(
+                    url,
+                    output_dir,
+                    progress_callback,
+                ),
+
+            ),
+
+            timeout=DOWNLOAD_TIMEOUT,
+
+        )
+
+    except asyncio.TimeoutError:
+
+        raise DownloadError(
+            "The download took too long "
+            "and was cancelled."
+        )
