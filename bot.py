@@ -26,13 +26,24 @@ from downloader import (
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "2.0.1"
+BOT_VERSION = "2.0.2"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.getenv("PORT", "8080"))
+BOT_TOKEN = os.getenv(
+    "BOT_TOKEN"
+)
+
+PORT = int(
+    os.getenv(
+        "PORT",
+        "8080"
+    )
+)
 
 DOWNLOAD_DIR = Path(
-    os.getenv("DOWNLOAD_DIR", "/app/downloads")
+    os.getenv(
+        "DOWNLOAD_DIR",
+        "/app/downloads"
+    )
 )
 
 DOWNLOAD_DIR.mkdir(
@@ -40,8 +51,14 @@ DOWNLOAD_DIR.mkdir(
     exist_ok=True
 )
 
-MAX_CONCURRENT_DOWNLOADS = int(
-    os.getenv("MAX_CONCURRENT_DOWNLOADS", "2")
+MAX_CONCURRENT_DOWNLOADS = max(
+    1,
+    int(
+        os.getenv(
+            "MAX_CONCURRENT_DOWNLOADS",
+            "1"
+        )
+    )
 )
 
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(
@@ -61,7 +78,10 @@ YOUTUBE_REGEX = re.compile(
 )
 
 
-def is_youtube_url(url: str) -> bool:
+def is_youtube_url(
+    url: str
+) -> bool:
+
     return bool(
         YOUTUBE_REGEX.match(
             url.strip()
@@ -73,14 +93,22 @@ def is_youtube_url(url: str) -> bool:
 # HELPERS
 # ============================================================
 
-def format_bytes(size):
+def format_bytes(
+    size
+):
 
     if size is None:
         return "Unknown"
 
     try:
+
         size = float(size)
-    except (TypeError, ValueError):
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
         return "Unknown"
 
     units = [
@@ -94,33 +122,61 @@ def format_bytes(size):
     for unit in units:
 
         if size < 1024:
-            return f"{size:.1f} {unit}"
+
+            return (
+                f"{size:.1f} {unit}"
+            )
 
         size /= 1024
 
     return f"{size:.1f} TB"
 
 
-def format_duration(seconds):
+def format_duration(
+    seconds
+):
 
     if not seconds:
         return None
 
     try:
-        seconds = int(seconds)
-    except (TypeError, ValueError):
-        return None
 
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-
-    if hours:
-        return (
-            f"{hours}:{minutes:02d}:{secs:02d}"
+        seconds = int(
+            seconds
         )
 
-    return f"{minutes}:{secs:02d}"
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    hours = (
+        seconds // 3600
+    )
+
+    minutes = (
+        seconds % 3600
+        // 60
+    )
+
+    secs = (
+        seconds % 60
+    )
+
+    if hours:
+
+        return (
+            f"{hours}:"
+            f"{minutes:02d}:"
+            f"{secs:02d}"
+        )
+
+    return (
+        f"{minutes}:"
+        f"{secs:02d}"
+    )
 
 
 async def safe_edit(
@@ -152,7 +208,7 @@ async def delete_message(
 
 
 def cleanup_job_directory(
-    job_dir,
+    job_dir
 ):
 
     if not job_dir:
@@ -172,7 +228,8 @@ def cleanup_job_directory(
             )
 
             print(
-                f"Cleaned job directory: {path}"
+                f"Cleaned job directory: "
+                f"{path}"
             )
 
     except Exception as error:
@@ -213,6 +270,7 @@ async def start(
         "📎 *Just send a YouTube link to begin.*\n\n"
 
         f"🤖 Audio Bot v{BOT_VERSION}",
+
         parse_mode="Markdown",
     )
 
@@ -248,6 +306,7 @@ async def help_command(
         "to download.\n\n"
 
         f"🤖 Version {BOT_VERSION}",
+
         parse_mode="Markdown",
     )
 
@@ -270,8 +329,10 @@ async def version_command(
         "🖼 Artwork: Enabled\n"
         "🏷 Metadata: Enabled\n"
         "🧹 Cleanup: Automatic\n"
+
         f"⚡ Concurrent downloads: "
         f"{MAX_CONCURRENT_DOWNLOADS}",
+
         parse_mode="Markdown",
     )
 
@@ -317,13 +378,24 @@ async def progress_callback(
         if percent is not None:
 
             try:
-                percent = float(percent)
-            except (TypeError, ValueError):
+
+                percent = float(
+                    percent
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
                 percent = 0
 
             percent = max(
                 0,
-                min(100, percent),
+                min(
+                    100,
+                    percent,
+                ),
             )
 
             filled = int(
@@ -337,7 +409,8 @@ async def progress_callback(
 
             text = (
                 f"🎵 *{status}*\n\n"
-                f"`{bar}` {percent:.0f}%\n\n"
+                f"`{bar}` "
+                f"{percent:.0f}%\n\n"
                 f"🤖 v{BOT_VERSION}"
             )
 
@@ -374,10 +447,6 @@ async def handle_link(
         or ""
     ).strip()
 
-    # --------------------------------------------------------
-    # VALIDATE URL
-    # --------------------------------------------------------
-
     if not is_youtube_url(
         original_url
     ):
@@ -388,19 +457,17 @@ async def handle_link(
             "YouTube Music URL.\n\n"
             "Example:\n"
             "`https://youtube.com/watch?v=...`",
+
             parse_mode="Markdown",
         )
 
         return
 
-    # --------------------------------------------------------
-    # STATUS
-    # --------------------------------------------------------
-
     status_message = (
         await update.message.reply_text(
             "🔍 *Analyzing YouTube link...*\n\n"
             "Please wait...",
+
             parse_mode="Markdown",
         )
     )
@@ -410,17 +477,18 @@ async def handle_link(
 
     try:
 
-        # ----------------------------------------------------
+        # ====================================================
         # QUEUE
-        # ----------------------------------------------------
+        # ====================================================
 
         if DOWNLOAD_SEMAPHORE.locked():
 
             await safe_edit(
                 status_message,
+
                 "⏳ *You're in the queue...*\n\n"
-                "Another download is currently being "
-                "processed.\n"
+                "Another download is currently "
+                "being processed.\n\n"
                 "I'll start yours automatically.",
             )
 
@@ -428,6 +496,7 @@ async def handle_link(
 
             await safe_edit(
                 status_message,
+
                 "🔎 *Finding the best available audio...*\n\n"
                 "Connecting to YouTube...",
             )
@@ -435,16 +504,13 @@ async def handle_link(
             result = await download_audio(
                 url=original_url,
                 output_dir=DOWNLOAD_DIR,
+
                 progress_callback=lambda progress:
                     progress_callback(
                         status_message,
                         progress,
                     ),
             )
-
-        # ----------------------------------------------------
-        # VALIDATE RESULT
-        # ----------------------------------------------------
 
         if not result:
 
@@ -453,7 +519,10 @@ async def handle_link(
             )
 
         audio_path = Path(
-            result.get("path", "")
+            result.get(
+                "path",
+                ""
+            )
         )
 
         job_dir = result.get(
@@ -472,18 +541,20 @@ async def handle_link(
                 "Downloaded audio file is empty."
             )
 
-        # ----------------------------------------------------
-        # METADATA
-        # ----------------------------------------------------
-
         title = (
-            result.get("title")
+            result.get(
+                "title"
+            )
             or "Audio"
         )
 
         artist = (
-            result.get("artist")
-            or result.get("uploader")
+            result.get(
+                "artist"
+            )
+            or result.get(
+                "uploader"
+            )
             or ""
         )
 
@@ -492,7 +563,9 @@ async def handle_link(
         )
 
         filename = (
-            result.get("filename")
+            result.get(
+                "filename"
+            )
             or audio_path.name
         )
 
@@ -500,12 +573,9 @@ async def handle_link(
             audio_path.stat().st_size
         )
 
-        # ----------------------------------------------------
-        # UPLOAD
-        # ----------------------------------------------------
-
         await safe_edit(
             status_message,
+
             "📤 *Uploading audio...*\n\n"
             f"🎵 {str(title)[:100]}\n"
             f"📦 {format_bytes(file_size)}",
@@ -522,7 +592,9 @@ async def handle_link(
             )
 
         formatted_duration = (
-            format_duration(duration)
+            format_duration(
+                duration
+            )
         )
 
         if formatted_duration:
@@ -539,43 +611,49 @@ async def handle_link(
             caption_parts
         )
 
-        # ----------------------------------------------------
-        # SEND AUDIO
-        # ----------------------------------------------------
-
         with open(
             audio_path,
             "rb",
         ) as audio_file:
 
             await update.message.reply_audio(
+
                 audio=audio_file,
-                title=str(title)[:128],
+
+                title=str(
+                    title
+                )[:128],
+
                 performer=(
                     str(artist)[:64]
                     if artist
                     else None
                 ),
+
                 filename=filename,
+
                 caption=caption[:1024],
+
                 read_timeout=300,
+
                 write_timeout=300,
+
                 connect_timeout=60,
+
                 pool_timeout=60,
             )
 
-        # ----------------------------------------------------
-        # COMPLETE
-        # ----------------------------------------------------
-
         await safe_edit(
             status_message,
+
             "✅ *Download complete!*\n\n"
             f"🎵 {str(title)[:100]}\n"
             f"📦 {format_bytes(file_size)}",
         )
 
-        await asyncio.sleep(2)
+        await asyncio.sleep(
+            2
+        )
 
         await delete_message(
             status_message
@@ -592,7 +670,9 @@ async def handle_link(
             error_text,
         )
 
-        lowered = error_text.lower()
+        lowered = (
+            error_text.lower()
+        )
 
         if "private" in lowered:
 
@@ -610,6 +690,19 @@ async def handle_link(
             )
 
         elif (
+            "rate-limit" in lowered
+            or "rate limit" in lowered
+            or "429" in lowered
+        ):
+
+            message = (
+                "⏳ *YouTube is temporarily busy*\n\n"
+                "YouTube is rate-limiting this server "
+                "right now.\n\n"
+                "Please try again after a short while."
+            )
+
+        elif (
             "sign in" in lowered
             or "bot" in lowered
         ):
@@ -618,7 +711,7 @@ async def handle_link(
                 "🛡️ *YouTube verification required*\n\n"
                 "YouTube is currently requiring additional "
                 "verification for this request.\n\n"
-                "Please try another video or try again later."
+                "Please try again later."
             )
 
         elif "403" in lowered:
@@ -632,8 +725,8 @@ async def handle_link(
 
             message = (
                 "📦 *File too large*\n\n"
-                "The resulting audio file exceeds the "
-                "configured upload limit."
+                "The resulting audio file exceeds "
+                "the configured upload limit."
             )
 
         elif "duration" in lowered:
@@ -665,6 +758,7 @@ async def handle_link(
 
         await safe_edit(
             status_message,
+
             "⏱️ *Download timed out*\n\n"
             "YouTube took too long to respond.\n"
             "Please try again.",
@@ -680,15 +774,12 @@ async def handle_link(
 
         await safe_edit(
             status_message,
+
             "❌ *Something went wrong*\n\n"
             "Please try the link again later.",
         )
 
     finally:
-
-        # ----------------------------------------------------
-        # DELETE ENTIRE JOB DIRECTORY
-        # ----------------------------------------------------
 
         if job_dir:
 
@@ -698,10 +789,10 @@ async def handle_link(
 
         elif audio_path:
 
-            # Fallback for an unexpected downloader result.
             try:
 
                 if audio_path.exists():
+
                     audio_path.unlink()
 
             except Exception as error:
@@ -730,11 +821,20 @@ class HealthHandler(
 
             body = json.dumps(
                 {
-                    "status": "ok",
-                    "service": "audio-bot",
-                    "version": BOT_VERSION,
-                    "engine": "yt-dlp + FFmpeg",
-                    "po_token_provider": "bgutil",
+                    "status":
+                        "ok",
+
+                    "service":
+                        "audio-bot",
+
+                    "version":
+                        BOT_VERSION,
+
+                    "engine":
+                        "yt-dlp + FFmpeg",
+
+                    "po_token_provider":
+                        "bgutil",
                 }
             ).encode()
 
@@ -749,7 +849,9 @@ class HealthHandler(
 
             self.send_header(
                 "Content-Length",
-                str(len(body)),
+                str(
+                    len(body)
+                ),
             )
 
             self.end_headers()
@@ -833,7 +935,7 @@ def cleanup_download_directory():
 
 
 # ============================================================
-# BOT COMMAND REGISTRATION
+# BOT COMMANDS
 # ============================================================
 
 async def post_init(
@@ -846,10 +948,12 @@ async def post_init(
                 "start",
                 "Start the bot",
             ),
+
             BotCommand(
                 "help",
                 "How to use the bot",
             ),
+
             BotCommand(
                 "version",
                 "Show bot version",
@@ -904,10 +1008,6 @@ def main():
         .build()
     )
 
-    # --------------------------------------------------------
-    # COMMANDS
-    # --------------------------------------------------------
-
     application.add_handler(
         CommandHandler(
             "start",
@@ -929,10 +1029,6 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # GREETINGS
-    # --------------------------------------------------------
-
     application.add_handler(
         MessageHandler(
             filters.Regex(
@@ -947,10 +1043,6 @@ def main():
         )
     )
 
-    # --------------------------------------------------------
-    # TEXT / YOUTUBE LINKS
-    # --------------------------------------------------------
-
     application.add_handler(
         MessageHandler(
             filters.TEXT
@@ -958,10 +1050,6 @@ def main():
             handle_link,
         )
     )
-
-    # --------------------------------------------------------
-    # ERROR HANDLER
-    # --------------------------------------------------------
 
     application.add_error_handler(
         error_handler
@@ -981,6 +1069,11 @@ def main():
 
     print(
         "🔐 PO Tokens: BGUTIL"
+    )
+
+    print(
+        "🔄 Clients: mweb → web_safari → "
+        "android_vr → web_embedded"
     )
 
     print(
