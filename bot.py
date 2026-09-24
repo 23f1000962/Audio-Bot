@@ -26,7 +26,7 @@ from downloader import (
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "2.0.0"
+BOT_VERSION = "2.0.1"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "8080"))
@@ -74,6 +74,7 @@ def is_youtube_url(url: str) -> bool:
 # ============================================================
 
 def format_bytes(size):
+
     if size is None:
         return "Unknown"
 
@@ -101,6 +102,7 @@ def format_bytes(size):
 
 
 def format_duration(seconds):
+
     if not seconds:
         return None
 
@@ -114,34 +116,71 @@ def format_duration(seconds):
     secs = seconds % 60
 
     if hours:
-        return f"{hours}:{minutes:02d}:{secs:02d}"
+        return (
+            f"{hours}:{minutes:02d}:{secs:02d}"
+        )
 
     return f"{minutes}:{secs:02d}"
 
 
-async def safe_edit(message, text):
+async def safe_edit(
+    message,
+    text,
+):
+
     try:
+
         await message.edit_text(
             text,
             parse_mode="Markdown",
         )
+
     except Exception:
         pass
 
 
-async def delete_message(message):
+async def delete_message(
+    message,
+):
+
     try:
+
         await message.delete()
+
     except Exception:
         pass
 
 
-def cleanup_file(path):
+def cleanup_job_directory(
+    job_dir,
+):
+
+    if not job_dir:
+        return
+
     try:
-        if path and Path(path).exists():
-            Path(path).unlink()
+
+        path = Path(
+            job_dir
+        )
+
+        if path.exists():
+
+            shutil.rmtree(
+                path,
+                ignore_errors=True,
+            )
+
+            print(
+                f"Cleaned job directory: {path}"
+            )
+
     except Exception as error:
-        print(f"Cleanup error: {error}")
+
+        print(
+            "Job cleanup error:",
+            error,
+        )
 
 
 # ============================================================
@@ -158,6 +197,7 @@ async def start(
 
     await update.message.reply_text(
         "🎵 *Audio Bot*\n\n"
+
         "Send me a YouTube or YouTube Music link "
         "and I'll convert it to an audio file.\n\n"
 
@@ -168,8 +208,7 @@ async def start(
         "• High-quality audio\n"
         "• Metadata & artwork\n"
         "• Download progress\n"
-        "• Automatic cleanup\n"
-        "• No account/login required\n\n"
+        "• Automatic cleanup\n\n"
 
         "📎 *Just send a YouTube link to begin.*\n\n"
 
@@ -231,7 +270,8 @@ async def version_command(
         "🖼 Artwork: Enabled\n"
         "🏷 Metadata: Enabled\n"
         "🧹 Cleanup: Automatic\n"
-        f"⚡ Concurrent downloads: {MAX_CONCURRENT_DOWNLOADS}",
+        f"⚡ Concurrent downloads: "
+        f"{MAX_CONCURRENT_DOWNLOADS}",
         parse_mode="Markdown",
     )
 
@@ -252,7 +292,7 @@ async def greeting(
 
 
 # ============================================================
-# PROGRESS CALLBACK
+# PROGRESS
 # ============================================================
 
 async def progress_callback(
@@ -265,7 +305,9 @@ async def progress_callback(
         if not progress:
             return
 
-        percent = progress.get("percent")
+        percent = progress.get(
+            "percent"
+        )
 
         status = progress.get(
             "status",
@@ -284,7 +326,9 @@ async def progress_callback(
                 min(100, percent),
             )
 
-            filled = int(percent // 10)
+            filled = int(
+                percent // 10
+            )
 
             bar = (
                 "█" * filled
@@ -314,7 +358,7 @@ async def progress_callback(
 
 
 # ============================================================
-# HANDLE YOUTUBE LINK
+# HANDLE LINK
 # ============================================================
 
 async def handle_link(
@@ -331,10 +375,12 @@ async def handle_link(
     ).strip()
 
     # --------------------------------------------------------
-    # Validate URL
+    # VALIDATE URL
     # --------------------------------------------------------
 
-    if not is_youtube_url(original_url):
+    if not is_youtube_url(
+        original_url
+    ):
 
         await update.message.reply_text(
             "❌ *Invalid YouTube link*\n\n"
@@ -348,21 +394,24 @@ async def handle_link(
         return
 
     # --------------------------------------------------------
-    # Initial status
+    # STATUS
     # --------------------------------------------------------
 
-    status_message = await update.message.reply_text(
-        "🔍 *Analyzing YouTube link...*\n\n"
-        "Please wait...",
-        parse_mode="Markdown",
+    status_message = (
+        await update.message.reply_text(
+            "🔍 *Analyzing YouTube link...*\n\n"
+            "Please wait...",
+            parse_mode="Markdown",
+        )
     )
 
     audio_path = None
+    job_dir = None
 
     try:
 
         # ----------------------------------------------------
-        # Queue
+        # QUEUE
         # ----------------------------------------------------
 
         if DOWNLOAD_SEMAPHORE.locked():
@@ -370,15 +419,12 @@ async def handle_link(
             await safe_edit(
                 status_message,
                 "⏳ *You're in the queue...*\n\n"
-                "Another download is currently being processed.\n"
+                "Another download is currently being "
+                "processed.\n"
                 "I'll start yours automatically.",
             )
 
         async with DOWNLOAD_SEMAPHORE:
-
-            # ------------------------------------------------
-            # Download
-            # ------------------------------------------------
 
             await safe_edit(
                 status_message,
@@ -396,18 +442,22 @@ async def handle_link(
                     ),
             )
 
+        # ----------------------------------------------------
+        # VALIDATE RESULT
+        # ----------------------------------------------------
+
         if not result:
 
             raise DownloadError(
                 "Downloader returned no result."
             )
 
-        # ----------------------------------------------------
-        # Validate result
-        # ----------------------------------------------------
-
         audio_path = Path(
             result.get("path", "")
+        )
+
+        job_dir = result.get(
+            "job_dir"
         )
 
         if not audio_path.exists():
@@ -423,7 +473,7 @@ async def handle_link(
             )
 
         # ----------------------------------------------------
-        # Metadata
+        # METADATA
         # ----------------------------------------------------
 
         title = (
@@ -446,10 +496,12 @@ async def handle_link(
             or audio_path.name
         )
 
-        file_size = audio_path.stat().st_size
+        file_size = (
+            audio_path.stat().st_size
+        )
 
         # ----------------------------------------------------
-        # Upload status
+        # UPLOAD
         # ----------------------------------------------------
 
         await safe_edit(
@@ -458,10 +510,6 @@ async def handle_link(
             f"🎵 {str(title)[:100]}\n"
             f"📦 {format_bytes(file_size)}",
         )
-
-        # ----------------------------------------------------
-        # Caption
-        # ----------------------------------------------------
 
         caption_parts = [
             f"🎵 {str(title)[:300]}"
@@ -473,8 +521,8 @@ async def handle_link(
                 f"👤 {str(artist)[:150]}"
             )
 
-        formatted_duration = format_duration(
-            duration
+        formatted_duration = (
+            format_duration(duration)
         )
 
         if formatted_duration:
@@ -492,7 +540,7 @@ async def handle_link(
         )
 
         # ----------------------------------------------------
-        # Send audio
+        # SEND AUDIO
         # ----------------------------------------------------
 
         with open(
@@ -503,9 +551,11 @@ async def handle_link(
             await update.message.reply_audio(
                 audio=audio_file,
                 title=str(title)[:128],
-                performer=str(artist)[:64]
-                if artist
-                else None,
+                performer=(
+                    str(artist)[:64]
+                    if artist
+                    else None
+                ),
                 filename=filename,
                 caption=caption[:1024],
                 read_timeout=300,
@@ -515,7 +565,7 @@ async def handle_link(
             )
 
         # ----------------------------------------------------
-        # Complete
+        # COMPLETE
         # ----------------------------------------------------
 
         await safe_edit(
@@ -531,21 +581,16 @@ async def handle_link(
             status_message
         )
 
-    # ========================================================
-    # ERROR HANDLING
-    # ========================================================
-
     except DownloadError as error:
 
-        error_text = str(error)
+        error_text = str(
+            error
+        )
 
         print(
             "DownloadError:",
             error_text,
         )
-
-        # Keep technical details out of the user-facing
-        # message when possible.
 
         lowered = error_text.lower()
 
@@ -553,8 +598,7 @@ async def handle_link(
 
             message = (
                 "🔒 *Private video*\n\n"
-                "This video cannot be downloaded because "
-                "it is private or unavailable publicly."
+                "This video is private or unavailable."
             )
 
         elif "age" in lowered:
@@ -565,12 +609,15 @@ async def handle_link(
                 "cannot provide."
             )
 
-        elif "sign in" in lowered or "bot" in lowered:
+        elif (
+            "sign in" in lowered
+            or "bot" in lowered
+        ):
 
             message = (
                 "🛡️ *YouTube verification required*\n\n"
                 "YouTube is currently requiring additional "
-                "verification for this video.\n\n"
+                "verification for this request.\n\n"
                 "Please try another video or try again later."
             )
 
@@ -585,15 +632,15 @@ async def handle_link(
 
             message = (
                 "📦 *File too large*\n\n"
-                "The resulting audio file is larger than "
-                "the bot's configured upload limit."
+                "The resulting audio file exceeds the "
+                "configured upload limit."
             )
 
         elif "duration" in lowered:
 
             message = (
                 "⏱️ *Video is too long*\n\n"
-                "This bot has a maximum duration limit."
+                "The maximum allowed duration has been exceeded."
             )
 
         else:
@@ -640,14 +687,29 @@ async def handle_link(
     finally:
 
         # ----------------------------------------------------
-        # Always cleanup generated audio
+        # DELETE ENTIRE JOB DIRECTORY
         # ----------------------------------------------------
 
-        if audio_path:
+        if job_dir:
 
-            cleanup_file(
-                audio_path
+            cleanup_job_directory(
+                job_dir
             )
+
+        elif audio_path:
+
+            # Fallback for an unexpected downloader result.
+            try:
+
+                if audio_path.exists():
+                    audio_path.unlink()
+
+            except Exception as error:
+
+                print(
+                    "Fallback cleanup error:",
+                    error,
+                )
 
 
 # ============================================================
@@ -682,12 +744,12 @@ class HealthHandler(
 
             self.send_header(
                 "Content-Type",
-                "application/json"
+                "application/json",
             )
 
             self.send_header(
                 "Content-Length",
-                str(len(body))
+                str(len(body)),
             )
 
             self.end_headers()
@@ -758,7 +820,8 @@ def cleanup_download_directory():
             elif item.is_dir():
 
                 shutil.rmtree(
-                    item
+                    item,
+                    ignore_errors=True,
                 )
 
         except Exception as error:
@@ -800,7 +863,7 @@ async def post_init(
 
 
 # ============================================================
-# ERROR HANDLER
+# TELEGRAM ERROR HANDLER
 # ============================================================
 
 async def error_handler(
@@ -829,10 +892,8 @@ def main():
             "BOT_TOKEN environment variable is missing."
         )
 
-    # Clean old files before starting.
     cleanup_download_directory()
 
-    # Start Render health endpoint.
     start_health_server()
 
     application = (
@@ -844,7 +905,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Commands
+    # COMMANDS
     # --------------------------------------------------------
 
     application.add_handler(
@@ -869,7 +930,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Greetings
+    # GREETINGS
     # --------------------------------------------------------
 
     application.add_handler(
@@ -887,7 +948,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # All non-command text
+    # TEXT / YOUTUBE LINKS
     # --------------------------------------------------------
 
     application.add_handler(
@@ -899,7 +960,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Error handler
+    # ERROR HANDLER
     # --------------------------------------------------------
 
     application.add_error_handler(
@@ -930,10 +991,6 @@ def main():
     print(
         "============================================"
     )
-
-    # IMPORTANT:
-    # Only ONE running instance of this bot should
-    # use the same BOT_TOKEN with polling.
 
     application.run_polling(
         drop_pending_updates=True,
