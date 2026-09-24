@@ -41,21 +41,32 @@ AUDIO_QUALITY = os.getenv(
 )
 
 DOWNLOAD_RETRIES = int(
-    os.getenv("DOWNLOAD_RETRIES", "5")
+    os.getenv("DOWNLOAD_RETRIES", "3")
 )
 
-MAX_CONCURRENT_DOWNLOADS = int(
-    os.getenv("MAX_CONCURRENT_DOWNLOADS", "1")
+MAX_CONCURRENT_DOWNLOADS = max(
+    1,
+    int(
+        os.getenv(
+            "MAX_CONCURRENT_DOWNLOADS",
+            "1"
+        )
+    )
 )
 
-# Delay between complete client attempts
-RETRY_BACKOFF = int(
-    os.getenv("RETRY_BACKOFF", "5")
+RETRY_BACKOFF = max(
+    3,
+    int(
+        os.getenv(
+            "RETRY_BACKOFF",
+            "8"
+        )
+    )
 )
 
 
 # ============================================================
-# INTERNAL CONCURRENCY CONTROL
+# INTERNAL CONCURRENCY
 # ============================================================
 
 _download_semaphore = asyncio.Semaphore(
@@ -203,35 +214,31 @@ class ProgressTracker:
                 )
             )
 
-            percent = None
+            if not total:
+                return
 
-            if total:
+            percent = (
+                downloaded
+                / total
+                * 100
+            )
 
-                percent = (
-                    downloaded
-                    / total
-                    * 100
-                )
-
-                percent = max(
-                    0,
-                    min(
-                        100,
-                        percent,
-                    ),
-                )
+            percent = max(
+                0,
+                min(
+                    100,
+                    percent,
+                ),
+            )
 
             if (
-                percent is not None
-                and (
-                    self.last_percent < 0
-                    or (
-                        percent
-                        - self.last_percent
-                        >= 2
-                    )
-                    or percent >= 99
+                self.last_percent < 0
+                or (
+                    percent
+                    - self.last_percent
+                    >= 2
                 )
+                or percent >= 99
             ):
 
                 self.last_percent = (
@@ -259,22 +266,10 @@ class ProgressTracker:
             self.callback(
                 {
                     "status":
-                        "Download complete",
+                        "Processing audio",
 
                     "percent":
                         100,
-                }
-            )
-
-        elif status == "error":
-
-            self.callback(
-                {
-                    "status":
-                        "Download failed",
-
-                    "percent":
-                        None,
                 }
             )
 
@@ -329,7 +324,7 @@ class YTDLPLogger:
 def build_ydl_options(
     output_dir: Path,
     progress_tracker: ProgressTracker,
-    player_client: str = "mweb",
+    player_client: str,
 ):
 
     output_template = str(
@@ -337,11 +332,11 @@ def build_ydl_options(
         / "%(id)s.%(ext)s"
     )
 
-    return {
+    options = {
 
-        # ====================================================
-        # AUDIO FORMAT
-        # ====================================================
+        # ----------------------------------------------------
+        # FORMAT
+        # ----------------------------------------------------
 
         "format":
             "bestaudio[ext=m4a]/"
@@ -354,9 +349,9 @@ def build_ydl_options(
         "noplaylist":
             True,
 
-        # ====================================================
+        # ----------------------------------------------------
         # OUTPUT
-        # ====================================================
+        # ----------------------------------------------------
 
         "quiet":
             True,
@@ -367,9 +362,9 @@ def build_ydl_options(
         "ignoreerrors":
             False,
 
-        # ====================================================
+        # ----------------------------------------------------
         # RETRIES
-        # ====================================================
+        # ----------------------------------------------------
 
         "retries":
             DOWNLOAD_RETRIES,
@@ -381,7 +376,7 @@ def build_ydl_options(
             DOWNLOAD_RETRIES,
 
         "extractor_retries":
-            3,
+            2,
 
         "socket_timeout":
             30,
@@ -392,30 +387,30 @@ def build_ydl_options(
         "overwrites":
             True,
 
-        # ====================================================
-        # RATE LIMIT / BACKOFF
-        # ====================================================
+        # ----------------------------------------------------
+        # REQUEST PACING
+        # ----------------------------------------------------
 
         "sleep_interval_requests":
-            1.5,
+            2,
 
         "sleep_interval":
             2,
 
         "max_sleep_interval":
-            8,
+            6,
 
-        # ====================================================
+        # ----------------------------------------------------
         # PROGRESS
-        # ====================================================
+        # ----------------------------------------------------
 
         "progress_hooks": [
             progress_tracker.hook
         ],
 
-        # ====================================================
-        # METADATA
-        # ====================================================
+        # ----------------------------------------------------
+        # METADATA / ARTWORK
+        # ----------------------------------------------------
 
         "writethumbnail":
             True,
@@ -423,9 +418,9 @@ def build_ydl_options(
         "addmetadata":
             True,
 
-        # ====================================================
-        # POST PROCESSING
-        # ====================================================
+        # ----------------------------------------------------
+        # POSTPROCESSING
+        # ----------------------------------------------------
 
         "postprocessors": [
 
@@ -451,9 +446,9 @@ def build_ydl_options(
             },
         ],
 
-        # ====================================================
+        # ----------------------------------------------------
         # YOUTUBE CLIENT
-        # ====================================================
+        # ----------------------------------------------------
 
         "extractor_args": {
 
@@ -464,9 +459,9 @@ def build_ydl_options(
                 ],
             },
 
-            # =================================================
-            # BGUTIL PO TOKEN PROVIDER
-            # =================================================
+            # ------------------------------------------------
+            # BGUTIL
+            # ------------------------------------------------
 
             "youtubepot-bgutilhttp": {
 
@@ -475,9 +470,9 @@ def build_ydl_options(
             },
         },
 
-        # ====================================================
-        # JAVASCRIPT RUNTIME
-        # ====================================================
+        # ----------------------------------------------------
+        # DENO
+        # ----------------------------------------------------
 
         "js_runtimes": {
 
@@ -488,17 +483,17 @@ def build_ydl_options(
             },
         },
 
-        # ====================================================
+        # ----------------------------------------------------
         # EJS
-        # ====================================================
+        # ----------------------------------------------------
 
         "remote_components": {
             "ejs:npm",
         },
 
-        # ====================================================
-        # LANGUAGE
-        # ====================================================
+        # ----------------------------------------------------
+        # HTTP
+        # ----------------------------------------------------
 
         "http_headers": {
 
@@ -506,13 +501,15 @@ def build_ydl_options(
                 "en-US,en;q=0.9",
         },
 
-        # ====================================================
+        # ----------------------------------------------------
         # LOGGER
-        # ====================================================
+        # ----------------------------------------------------
 
         "logger":
             YTDLPLogger(),
     }
+
+    return options
 
 
 # ============================================================
@@ -529,10 +526,6 @@ def classify_download_error(
 
     lowered = message.lower()
 
-    # --------------------------------------------------------
-    # RATE LIMIT
-    # --------------------------------------------------------
-
     if (
         "http error 429" in lowered
         or "too many requests" in lowered
@@ -541,13 +534,8 @@ def classify_download_error(
 
         return DownloadError(
             "YouTube is temporarily "
-            "rate-limiting this server. "
-            "Please try again shortly."
+            "rate-limiting this server."
         )
-
-    # --------------------------------------------------------
-    # BOT CHECK
-    # --------------------------------------------------------
 
     if (
         "sign in to confirm" in lowered
@@ -560,13 +548,8 @@ def classify_download_error(
 
         return DownloadError(
             "YouTube temporarily rejected "
-            "this server as automated traffic. "
-            "Please try again shortly."
+            "this server as automated traffic."
         )
-
-    # --------------------------------------------------------
-    # PRIVATE / UNAVAILABLE
-    # --------------------------------------------------------
 
     if (
         "private video" in lowered
@@ -580,10 +563,6 @@ def classify_download_error(
             "unavailable or private."
         )
 
-    # --------------------------------------------------------
-    # AGE / MEMBERS
-    # --------------------------------------------------------
-
     if (
         "age-restricted" in lowered
         or "confirm your age" in lowered
@@ -596,23 +575,14 @@ def classify_download_error(
             "an age restriction."
         )
 
-    # --------------------------------------------------------
-    # FORBIDDEN
-    # --------------------------------------------------------
-
     if (
         "http error 403" in lowered
         or "forbidden" in lowered
     ):
 
         return DownloadError(
-            "YouTube rejected the media "
-            "request. Please try again."
+            "YouTube rejected the media request."
         )
-
-    # --------------------------------------------------------
-    # GENERIC
-    # --------------------------------------------------------
 
     return DownloadError(
         message[:700]
@@ -620,7 +590,7 @@ def classify_download_error(
 
 
 # ============================================================
-# EXTRACT INFORMATION
+# EXTRACT INFO
 # ============================================================
 
 def extract_info(
@@ -664,8 +634,7 @@ def find_audio_file(
     video_id: str,
 ):
 
-    audio_extensions = {
-
+    extensions = {
         ".mp3",
         ".m4a",
         ".aac",
@@ -688,7 +657,7 @@ def find_audio_file(
                 f"{video_id}."
             )
             and file.suffix.lower()
-            in audio_extensions
+            in extensions
         )
     ]
 
@@ -700,74 +669,6 @@ def find_audio_file(
         key=lambda x:
             x.stat().st_mtime,
     )
-
-
-# ============================================================
-# CLEANUP
-# ============================================================
-
-def cleanup_related_files(
-    output_dir: Path,
-    video_id: Optional[str] = None,
-    keep: Optional[Path] = None,
-):
-
-    if not output_dir.exists():
-        return
-
-    temporary_extensions = {
-
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-        ".part",
-        ".ytdl",
-        ".temp",
-        ".json",
-    }
-
-    for file in output_dir.iterdir():
-
-        if not file.is_file():
-            continue
-
-        if (
-            keep
-            and file.resolve()
-            == keep.resolve()
-        ):
-            continue
-
-        delete = False
-
-        if video_id:
-
-            if file.name.startswith(
-                f"{video_id}."
-            ):
-
-                delete = True
-
-        if (
-            file.suffix.lower()
-            in temporary_extensions
-        ):
-
-            delete = True
-
-        if delete:
-
-            try:
-
-                file.unlink()
-
-            except Exception as error:
-
-                print(
-                    "Cleanup error:",
-                    error,
-                )
 
 
 # ============================================================
@@ -838,10 +739,6 @@ def download_with_client(
             f"{max_minutes} minutes."
         )
 
-    # --------------------------------------------------------
-    # METADATA
-    # --------------------------------------------------------
-
     title = (
         info.get("track")
         or info.get("title")
@@ -911,7 +808,7 @@ def download_with_client(
         ) from error
 
     # --------------------------------------------------------
-    # FIND RESULT
+    # FIND FILE
     # --------------------------------------------------------
 
     audio_path = find_audio_file(
@@ -926,10 +823,6 @@ def download_with_client(
             "audio file was not found."
         )
 
-    # --------------------------------------------------------
-    # FILE SIZE
-    # --------------------------------------------------------
-
     file_size = (
         audio_path.stat().st_size
     )
@@ -941,10 +834,12 @@ def download_with_client(
 
     print(
         "Final size:",
-        format_bytes(
-            file_size
-        ),
+        format_bytes(file_size),
     )
+
+    # --------------------------------------------------------
+    # SIZE CHECK
+    # --------------------------------------------------------
 
     if (
         file_size
@@ -1004,10 +899,6 @@ def download_with_client(
                 "Rename failed:",
                 error,
             )
-
-    # --------------------------------------------------------
-    # RESULT
-    # --------------------------------------------------------
 
     return {
 
@@ -1069,10 +960,6 @@ def download_sync(
         exist_ok=True,
     )
 
-    # --------------------------------------------------------
-    # ISOLATED JOB DIRECTORY
-    # --------------------------------------------------------
-
     job_dir = Path(
         tempfile.mkdtemp(
             prefix="job_",
@@ -1085,19 +972,22 @@ def download_sync(
         job_dir,
     )
 
-    # --------------------------------------------------------
-    # CLIENT ORDER
+    # ========================================================
+    # CLIENT STRATEGY
     #
-    # mweb is the primary/recommended client
-    # with BGUTIL PO tokens.
+    # 1. mweb       -> primary + BGUTIL PO token
+    # 2. web_safari -> HLS-capable fallback
+    # 3. android_vr -> no GVS PO token required
+    # 4. web_embedded -> no GVS PO token required
     #
-    # web_safari provides a useful fallback because
-    # its HLS handling can differ from mweb.
-    # --------------------------------------------------------
+    # These are FALLBACKS, not simultaneous requests.
+    # ========================================================
 
     clients = [
         "mweb",
         "web_safari",
+        "android_vr",
+        "web_embedded",
     ]
 
     last_error = None
@@ -1130,9 +1020,14 @@ def download_sync(
                 )
 
                 result = download_with_client(
-                    url,
-                    job_dir,
-                    progress_callback,
+                    url=url,
+                    job_dir=job_dir,
+                    progress_callback=progress_callback,
+                    player_client=client,
+                )
+
+                print(
+                    "SUCCESS with client:",
                     client,
                 )
 
@@ -1143,9 +1038,6 @@ def download_sync(
                 DurationTooLongError,
                 VideoUnavailableError,
             ):
-
-                # These are not normally fixed by
-                # changing YouTube clients.
 
                 raise
 
@@ -1163,10 +1055,6 @@ def download_sync(
                     error,
                 )
 
-                # --------------------------------------------
-                # Don't immediately hammer YouTube.
-                # --------------------------------------------
-
                 if index < len(clients):
 
                     delay = (
@@ -1176,7 +1064,7 @@ def download_sync(
 
                     print(
                         f"Waiting {delay} seconds "
-                        "before fallback..."
+                        "before next client..."
                     )
 
                     time.sleep(
@@ -1191,19 +1079,13 @@ def download_sync(
             "All YouTube download methods failed."
         )
 
-    except Exception:
+    finally:
 
-        try:
+        # IMPORTANT:
+        # Do NOT delete a successful job here.
+        # bot.py deletes it after Telegram upload.
 
-            shutil.rmtree(
-                job_dir,
-                ignore_errors=True,
-            )
-
-        except Exception:
-            pass
-
-        raise
+        pass
 
 
 # ============================================================
