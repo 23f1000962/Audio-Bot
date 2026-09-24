@@ -7,7 +7,9 @@ FROM python:3.13-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    DENO_INSTALL=/root/.deno \
+    PATH=/root/.deno/bin:$PATH
 
 # ============================================================
 # WORKING DIRECTORY
@@ -24,7 +26,17 @@ RUN apt-get update && \
         ffmpeg \
         ca-certificates \
         curl \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
+
+# ============================================================
+# INSTALL DENO
+# ============================================================
+
+RUN curl -fsSL https://deno.land/install.sh | sh
+
+# Verify Deno installation
+RUN deno --version
 
 # ============================================================
 # PYTHON DEPENDENCIES
