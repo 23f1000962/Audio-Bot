@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -404,13 +405,8 @@ def build_ydl_options(
         ],
 
         # ----------------------------------------------------
-        # YOUTUBE / PO TOKEN PROVIDER
+        # BGUTIL PO TOKEN PROVIDER
         # ----------------------------------------------------
-
-        # The bgutil HTTP provider is running locally
-        # inside the same Docker container.
-        #
-        # This explicitly tells the plugin where it is.
 
         "extractor_args": {
             "youtubepot-bgutilhttp": {
@@ -420,7 +416,7 @@ def build_ydl_options(
         },
 
         # ----------------------------------------------------
-        # JS RUNTIME
+        # JAVASCRIPT RUNTIME
         # ----------------------------------------------------
 
         "js_runtimes": {
@@ -682,12 +678,32 @@ def download_sync(
         exist_ok=True,
     )
 
+    # --------------------------------------------------------
+    # ISOLATED JOB DIRECTORY
+    #
+    # Every request gets its own directory.
+    # This prevents concurrent downloads from interfering
+    # with each other.
+    # --------------------------------------------------------
+
+    job_dir = Path(
+        tempfile.mkdtemp(
+            prefix="job_",
+            dir=str(output_dir),
+        )
+    )
+
+    print(
+        "Job directory:",
+        job_dir,
+    )
+
     tracker = ProgressTracker(
         progress_callback
     )
 
     options = build_ydl_options(
-        output_dir,
+        job_dir,
         tracker,
     )
 
@@ -705,258 +721,270 @@ def download_sync(
         "============================================"
     )
 
-    # --------------------------------------------------------
-    # GET METADATA
-    # --------------------------------------------------------
-
-    info = extract_info(
-        url,
-        options,
-    )
-
-    duration = info.get(
-        "duration"
-    )
-
-    # --------------------------------------------------------
-    # DURATION LIMIT
-    # --------------------------------------------------------
-
-    if (
-        duration
-        and duration > MAX_DURATION
-    ):
-
-        max_minutes = (
-            MAX_DURATION // 60
-        )
-
-        raise DurationTooLongError(
-            f"This audio is too long. "
-            f"Maximum allowed duration is "
-            f"{max_minutes} minutes."
-        )
-
-    # --------------------------------------------------------
-    # METADATA
-    # --------------------------------------------------------
-
-    title = (
-        info.get("track")
-        or info.get("title")
-        or "Audio"
-    )
-
-    artist = (
-        info.get("artist")
-        or info.get("creator")
-        or info.get("uploader")
-        or ""
-    )
-
-    uploader = (
-        info.get("uploader")
-        or ""
-    )
-
-    thumbnail = (
-        info.get("thumbnail")
-        or ""
-    )
-
-    webpage_url = (
-        info.get("webpage_url")
-        or url
-    )
-
-    video_id = (
-        info.get("id")
-        or "audio"
-    )
-
-    print(
-        "Title:",
-        title,
-    )
-
-    print(
-        "Artist:",
-        artist,
-    )
-
-    print(
-        "Video ID:",
-        video_id,
-    )
-
-    # --------------------------------------------------------
-    # DOWNLOAD
-    # --------------------------------------------------------
-
     try:
 
-        with yt_dlp.YoutubeDL(
-            options
-        ) as ydl:
+        # ----------------------------------------------------
+        # GET METADATA
+        # ----------------------------------------------------
 
-            ydl.download(
-                [url]
-            )
-
-    except yt_dlp.utils.DownloadError as error:
-
-        raise classify_download_error(
-            error
-        ) from error
-
-    # --------------------------------------------------------
-    # FIND MP3
-    # --------------------------------------------------------
-
-    audio_path = find_audio_file(
-        output_dir,
-        video_id,
-    )
-
-    if not audio_path:
-
-        raise DownloadError(
-            "yt-dlp completed but the "
-            "audio file was not found."
+        info = extract_info(
+            url,
+            options,
         )
 
-    # --------------------------------------------------------
-    # FILE SIZE
-    # --------------------------------------------------------
+        duration = info.get(
+            "duration"
+        )
 
-    file_size = (
-        audio_path.stat().st_size
-    )
+        # ----------------------------------------------------
+        # DURATION LIMIT
+        # ----------------------------------------------------
 
-    print(
-        "Final file:",
-        audio_path,
-    )
+        if (
+            duration
+            and duration > MAX_DURATION
+        ):
 
-    print(
-        "Final size:",
-        format_bytes(file_size),
-    )
+            max_minutes = (
+                MAX_DURATION // 60
+            )
 
-    if (
-        file_size
-        > MAX_FILE_SIZE_BYTES
-    ):
+            raise DurationTooLongError(
+                f"This audio is too long. "
+                f"Maximum allowed duration is "
+                f"{max_minutes} minutes."
+            )
+
+        # ----------------------------------------------------
+        # METADATA
+        # ----------------------------------------------------
+
+        title = (
+            info.get("track")
+            or info.get("title")
+            or "Audio"
+        )
+
+        artist = (
+            info.get("artist")
+            or info.get("creator")
+            or info.get("uploader")
+            or ""
+        )
+
+        uploader = (
+            info.get("uploader")
+            or ""
+        )
+
+        thumbnail = (
+            info.get("thumbnail")
+            or ""
+        )
+
+        webpage_url = (
+            info.get("webpage_url")
+            or url
+        )
+
+        video_id = (
+            info.get("id")
+            or "audio"
+        )
+
+        print(
+            "Title:",
+            title,
+        )
+
+        print(
+            "Artist:",
+            artist,
+        )
+
+        print(
+            "Video ID:",
+            video_id,
+        )
+
+        # ----------------------------------------------------
+        # DOWNLOAD
+        # ----------------------------------------------------
 
         try:
-            audio_path.unlink()
+
+            with yt_dlp.YoutubeDL(
+                options
+            ) as ydl:
+
+                ydl.download(
+                    [url]
+                )
+
+        except yt_dlp.utils.DownloadError as error:
+
+            raise classify_download_error(
+                error
+            ) from error
+
+        # ----------------------------------------------------
+        # FIND AUDIO
+        # ----------------------------------------------------
+
+        audio_path = find_audio_file(
+            job_dir,
+            video_id,
+        )
+
+        if not audio_path:
+
+            raise DownloadError(
+                "yt-dlp completed but the "
+                "audio file was not found."
+            )
+
+        # ----------------------------------------------------
+        # FILE SIZE
+        # ----------------------------------------------------
+
+        file_size = (
+            audio_path.stat().st_size
+        )
+
+        print(
+            "Final file:",
+            audio_path,
+        )
+
+        print(
+            "Final size:",
+            format_bytes(file_size),
+        )
+
+        if (
+            file_size
+            > MAX_FILE_SIZE_BYTES
+        ):
+
+            raise FileTooLargeError(
+                "The final audio file is "
+                f"{format_bytes(file_size)}, "
+                "which exceeds the configured "
+                f"{MAX_FILE_SIZE_MB} MB limit."
+            )
+
+        # ----------------------------------------------------
+        # RENAME
+        # ----------------------------------------------------
+
+        clean_title = sanitize_filename(
+            title,
+            90,
+        )
+
+        extension = (
+            audio_path.suffix.lower()
+        )
+
+        final_path = (
+            job_dir
+            / f"{clean_title}{extension}"
+        )
+
+        counter = 1
+
+        while final_path.exists():
+
+            final_path = (
+                job_dir
+                / f"{clean_title} "
+                f"({counter}){extension}"
+            )
+
+            counter += 1
+
+        if final_path != audio_path:
+
+            try:
+
+                audio_path.rename(
+                    final_path
+                )
+
+                audio_path = final_path
+
+            except Exception as error:
+
+                print(
+                    "Rename failed:",
+                    error,
+                )
+
+        # ----------------------------------------------------
+        # RESULT
+        # ----------------------------------------------------
+
+        return {
+
+            "path":
+                str(audio_path),
+
+            "filename":
+                audio_path.name,
+
+            "title":
+                str(title),
+
+            "artist":
+                str(artist),
+
+            "uploader":
+                str(uploader),
+
+            "duration":
+                duration,
+
+            "thumbnail":
+                str(thumbnail),
+
+            "webpage_url":
+                webpage_url,
+
+            "video_id":
+                video_id,
+
+            "filesize":
+                file_size,
+
+            "format":
+                extension.lstrip("."),
+
+            "quality":
+                AUDIO_QUALITY,
+
+            # Important:
+            # bot.py uses this to delete the entire
+            # isolated job directory after upload.
+            "job_dir":
+                str(job_dir),
+        }
+
+    except Exception:
+
+        # If download fails before returning the result,
+        # remove this job immediately.
+
+        try:
+
+            shutil.rmtree(
+                job_dir,
+                ignore_errors=True,
+            )
+
         except Exception:
             pass
 
-        cleanup_related_files(
-            output_dir,
-            video_id,
-        )
-
-        raise FileTooLargeError(
-            "The final audio file is "
-            f"{format_bytes(file_size)}, "
-            "which exceeds the configured "
-            f"{MAX_FILE_SIZE_MB} MB limit."
-        )
-
-    # --------------------------------------------------------
-    # RENAME
-    # --------------------------------------------------------
-
-    clean_title = sanitize_filename(
-        title,
-        90,
-    )
-
-    extension = (
-        audio_path.suffix.lower()
-    )
-
-    final_path = (
-        output_dir
-        / f"{clean_title}{extension}"
-    )
-
-    counter = 1
-
-    while (
-        final_path.exists()
-        and final_path != audio_path
-    ):
-
-        final_path = (
-            output_dir
-            / f"{clean_title} "
-            f"({counter}){extension}"
-        )
-
-        counter += 1
-
-    if final_path != audio_path:
-
-        try:
-
-            audio_path.rename(
-                final_path
-            )
-
-            audio_path = final_path
-
-        except Exception as error:
-
-            print(
-                "Rename failed:",
-                error,
-            )
-
-    # --------------------------------------------------------
-    # RESULT
-    # --------------------------------------------------------
-
-    return {
-
-        "path":
-            str(audio_path),
-
-        "filename":
-            audio_path.name,
-
-        "title":
-            str(title),
-
-        "artist":
-            str(artist),
-
-        "uploader":
-            str(uploader),
-
-        "duration":
-            duration,
-
-        "thumbnail":
-            str(thumbnail),
-
-        "webpage_url":
-            webpage_url,
-
-        "video_id":
-            video_id,
-
-        "filesize":
-            file_size,
-
-        "format":
-            extension.lstrip("."),
-
-        "quality":
-            AUDIO_QUALITY,
-    }
+        raise
 
 
 # ============================================================
