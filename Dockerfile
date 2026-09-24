@@ -14,6 +14,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+
 # ============================================================
 # SYSTEM DEPENDENCIES
 # ============================================================
@@ -24,7 +25,9 @@ RUN apt-get update && \
         ca-certificates \
         curl \
         git \
+        unzip \
     && rm -rf /var/lib/apt/lists/*
+
 
 # ============================================================
 # INSTALL DENO
@@ -34,6 +37,7 @@ RUN curl -fsSL https://deno.land/install.sh | sh
 
 RUN deno --version
 
+
 # ============================================================
 # PYTHON DEPENDENCIES
 # ============================================================
@@ -41,6 +45,7 @@ RUN deno --version
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
+
 
 # ============================================================
 # INSTALL BGUTIL PO TOKEN PROVIDER SERVER
@@ -53,12 +58,18 @@ RUN git clone \
         https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
         ${BGUTIL_HOME}
 
+
 WORKDIR ${BGUTIL_HOME}/server
 
-# Install the provider's JavaScript dependencies.
+
+# ============================================================
+# INSTALL BGUTIL JAVASCRIPT DEPENDENCIES
+# ============================================================
+
 RUN deno install \
         --allow-scripts=npm:canvas \
         --frozen
+
 
 # ============================================================
 # APPLICATION
@@ -72,12 +83,14 @@ COPY start.sh .
 
 RUN chmod +x /app/start.sh
 
+
 # ============================================================
 # DOWNLOAD DIRECTORY
 # ============================================================
 
 RUN mkdir -p /app/downloads && \
     chmod 755 /app/downloads
+
 
 # ============================================================
 # HEALTH CHECK
@@ -88,6 +101,7 @@ HEALTHCHECK --interval=30s \
     --start-period=45s \
     --retries=3 \
     CMD curl -f http://localhost:${PORT}/healthz || exit 1
+
 
 # ============================================================
 # START
