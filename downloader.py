@@ -1,7 +1,9 @@
 import os
 import re
 import asyncio
+import inspect
 import shutil
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -35,6 +37,8 @@ AUDIO_OUTPUT = os.getenv(
     "mp3"
 ).lower()
 
+# Target MP3 bitrate.
+# Example: 128 / 192 / 256 / 320
 AUDIO_QUALITY = os.getenv(
     "AUDIO_QUALITY",
     "192"
@@ -54,12 +58,14 @@ MAX_CONCURRENT_DOWNLOADS = max(
     )
 )
 
-RETRY_BACKOFF = max(
-    3,
+# Delay between client fallbacks.
+# Keep this LOW for faster recovery.
+FALLBACK_DELAY = max(
+    0,
     int(
         os.getenv(
-            "RETRY_BACKOFF",
-            "8"
+            "FALLBACK_DELAY",
+            "1"
         )
     )
 )
@@ -75,12 +81,11 @@ RETRY_BACKOFF = max(
 #
 # Render Secret Files are READ-ONLY.
 #
-# Therefore we copy the secret cookie file into /tmp
-# and let yt-dlp use the writable copy.
+# Therefore we copy the secret into /tmp and let yt-dlp
+# use the writable runtime copy.
 #
-# NEVER put cookies.txt in GitHub.
+# NEVER commit cookies.txt to GitHub.
 # NEVER print cookie contents.
-# NEVER log cookie values.
 
 COOKIE_FILE = Path(
     os.getenv(
@@ -112,7 +117,7 @@ def cookies_available() -> bool:
         return False
 
 
-def prepare_cookie_file():
+def prepare_cookie_file() -> bool:
 
     if not cookies_available():
 
@@ -130,7 +135,6 @@ def prepare_cookie_file():
             RUNTIME_COOKIE_FILE,
         )
 
-        # Restrict permissions where supported.
         try:
 
             os.chmod(
@@ -167,16 +171,15 @@ def verify_cookie_file():
             "YouTube cookies: available"
         )
 
-        return
+    else:
 
-    print(
-        "YouTube cookies: NOT FOUND"
-    )
+        print(
+            "YouTube cookies: NOT FOUND"
+        )
 
-    print(
-        f"Expected cookie file: "
-        f"{COOKIE_FILE}"
-    )
+        print(
+            f"Expected cookie file: {COOKIE_FILE}"
+        )
 
 
 # ============================================================
@@ -196,21 +199,15 @@ class DownloadError(Exception):
     pass
 
 
-class FileTooLargeError(
-    DownloadError
-):
+class FileTooLargeError(DownloadError):
     pass
 
 
-class DurationTooLongError(
-    DownloadError
-):
+class DurationTooLongError(DownloadError):
     pass
 
 
-class VideoUnavailableError(
-    DownloadError
-):
+class VideoUnavailableError(DownloadError):
     pass
 
 
@@ -267,6 +264,15 @@ def ensure_ffmpeg():
             "the server."
         )
 
+    if not shutil.which(
+        "ffprobe"
+    ):
+
+        raise DownloadError(
+            "FFprobe is not installed on "
+            "the server."
+        )
+
 
 def format_bytes(
     size: Optional[int],
@@ -276,9 +282,7 @@ def format_bytes(
 
         return "Unknown"
 
-    size = float(
-        size
-    )
+    size = float(size)
 
     for unit in (
         "B",
@@ -290,15 +294,342 @@ def format_bytes(
 
         if size < 1024:
 
-            return (
-                f"{size:.1f} {unit}"
-            )
+            return f"{size:.1f} {unit}"
 
         size /= 1024
 
-    return (
-        f"{size:.1f} TB"
+    return f"{size:.1f} TB"
+
+
+def format_duration(
+    seconds: Optional[float],
+) -> str:
+
+    if not seconds:
+
+        return ""
+
+    try:
+
+        seconds = int(
+            float(seconds)
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return ""
+
+    hours = seconds // 3600
+
+    minutes = (
+        seconds % 3600
+    ) // 60
+
+    remaining = (
+        seconds % 60
     )
+
+    if hours:
+
+        return (
+            f"{hours}:{minutes:02d}:"
+            f"{remaining:02d}"
+        )
+
+    return (
+        f"{minutes}:{remaining:02d}"
+    )
+
+
+def format_speed(
+    speed: Optional[float],
+) -> str:
+
+    if not speed:
+
+        return "Unknown"
+
+    return (
+        f"{format_bytes(int(speed))}/s"
+    )
+
+
+def format_eta(
+    eta: Optional[float],
+) -> str:
+
+    if eta is None:
+
+        return "--:--"
+
+    try:
+
+        eta = max(
+            0,
+            int(eta)
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return "--:--"
+
+    minutes = eta // 60
+
+    seconds = eta % 60
+
+    if minutes >= 60:
+
+        hours = minutes // 60
+
+        minutes %= 60
+
+        return (
+            f"{hours}:{minutes:02d}:"
+            f"{seconds:02d}"
+        )
+
+    return (
+        f"{minutes:02d}:"
+        f"{seconds:02d}"
+    )
+
+
+# ============================================================
+# QUALITY HELPERS
+# ============================================================
+
+def clean_bitrate(
+    bitrate: Optional[float],
+) -> Optional[int]:
+
+    if bitrate is None:
+
+        return None
+
+    try:
+
+        value = float(
+            bitrate
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        return None
+
+    # yt-dlp generally reports abr/tbr in Kbps.
+    if value <= 0:
+
+        return None
+
+    return int(
+        round(value)
+    )
+
+
+def get_source_quality(
+    info: dict,
+) -> dict:
+
+    formats = (
+        info.get("requested_formats")
+        or []
+    )
+
+    selected = (
+        formats[0]
+        if formats
+        else info
+    )
+
+    source_bitrate = (
+        clean_bitrate(
+            selected.get("abr")
+        )
+        or clean_bitrate(
+            selected.get("tbr")
+        )
+        or clean_bitrate(
+            info.get("abr")
+        )
+        or clean_bitrate(
+            info.get("tbr")
+        )
+    )
+
+    source_codec = (
+        selected.get("acodec")
+        or info.get("acodec")
+        or "unknown"
+    )
+
+    source_ext = (
+        selected.get("ext")
+        or info.get("ext")
+        or "unknown"
+    )
+
+    return {
+        "source_bitrate": source_bitrate,
+        "source_codec": source_codec,
+        "source_ext": source_ext,
+    }
+
+
+def get_audio_quality(
+    file_path: Path,
+) -> dict:
+
+    result = {
+        "output_codec": None,
+        "output_bitrate": None,
+        "sample_rate": None,
+        "channels": None,
+        "quality_text": None,
+    }
+
+    try:
+
+        command = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_name,bit_rate,sample_rate,channels",
+            "-of",
+            "default=noprint_wrappers=1",
+            str(file_path),
+        ]
+
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+
+        if process.returncode != 0:
+
+            return result
+
+        values = {}
+
+        for line in (
+            process.stdout.splitlines()
+        ):
+
+            if "=" not in line:
+
+                continue
+
+            key, value = (
+                line.split(
+                    "=",
+                    1
+                )
+            )
+
+            values[key.strip()] = (
+                value.strip()
+            )
+
+        codec = values.get(
+            "codec_name"
+        )
+
+        bitrate = values.get(
+            "bit_rate"
+        )
+
+        sample_rate = values.get(
+            "sample_rate"
+        )
+
+        channels = values.get(
+            "channels"
+        )
+
+        output_bitrate = None
+
+        if bitrate:
+
+            try:
+
+                output_bitrate = int(
+                    round(
+                        int(bitrate)
+                        / 1000
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ):
+
+                pass
+
+        result[
+            "output_codec"
+        ] = codec
+
+        result[
+            "output_bitrate"
+        ] = output_bitrate
+
+        result[
+            "sample_rate"
+        ] = sample_rate
+
+        result[
+            "channels"
+        ] = channels
+
+        codec_name = (
+            codec.upper()
+            if codec
+            else AUDIO_OUTPUT.upper()
+        )
+
+        if output_bitrate:
+
+            result[
+                "quality_text"
+            ] = (
+                f"{codec_name} • "
+                f"{output_bitrate} kbps"
+            )
+
+        else:
+
+            result[
+                "quality_text"
+            ] = (
+                f"{codec_name} • "
+                f"{AUDIO_QUALITY} kbps target"
+            )
+
+        return result
+
+    except Exception as error:
+
+        print(
+            "FFprobe quality check failed:",
+            type(error).__name__,
+        )
+
+        return result
 
 
 # ============================================================
@@ -313,7 +644,32 @@ class ProgressTracker:
     ):
 
         self.callback = callback
+
         self.last_percent = -1
+
+        self.last_update_time = 0.0
+
+    def _send(
+        self,
+        payload: dict,
+    ):
+
+        if not self.callback:
+
+            return
+
+        try:
+
+            self.callback(
+                payload
+            )
+
+        except Exception as error:
+
+            print(
+                "Progress callback error:",
+                type(error).__name__,
+            )
 
     def hook(
         self,
@@ -327,6 +683,10 @@ class ProgressTracker:
         status = data.get(
             "status"
         )
+
+        # ----------------------------------------------------
+        # DOWNLOADING
+        # ----------------------------------------------------
 
         if status == "downloading":
 
@@ -344,63 +704,111 @@ class ProgressTracker:
                 )
             )
 
-            if not total:
+            percent = None
+
+            if total:
+
+                percent = (
+                    downloaded
+                    / total
+                    * 100
+                )
+
+                percent = max(
+                    0,
+                    min(
+                        100,
+                        percent,
+                    ),
+                )
+
+            now = time.monotonic()
+
+            # Update Telegram roughly every 1.5 seconds
+            # OR whenever progress moves by >= 2%.
+            should_update = (
+                self.last_percent < 0
+                or (
+                    percent is not None
+                    and (
+                        percent
+                        - self.last_percent
+                        >= 2
+                    )
+                )
+                or (
+                    now
+                    - self.last_update_time
+                    >= 1.5
+                )
+            )
+
+            if not should_update:
 
                 return
 
-            percent = (
-                downloaded
-                / total
-                * 100
-            )
-
-            percent = max(
-                0,
-                min(
-                    100,
-                    percent,
-                ),
-            )
-
-            if (
-                self.last_percent < 0
-                or (
-                    percent
-                    - self.last_percent
-                    >= 2
-                )
-                or percent >= 99
-            ):
+            if percent is not None:
 
                 self.last_percent = (
                     percent
                 )
 
-                self.callback(
-                    {
-                        "status":
-                            "Downloading",
+            self.last_update_time = now
 
-                        "percent":
-                            percent,
+            self._send(
+                {
+                    "status":
+                        "Downloading",
 
-                        "downloaded_bytes":
-                            downloaded,
+                    "percent":
+                        percent,
 
-                        "total_bytes":
-                            total,
-                    }
-                )
+                    "downloaded_bytes":
+                        downloaded,
+
+                    "total_bytes":
+                        total,
+
+                    "speed":
+                        data.get(
+                            "speed"
+                        ),
+
+                    "eta":
+                        data.get(
+                            "eta"
+                        ),
+
+                    "speed_text":
+                        format_speed(
+                            data.get(
+                                "speed"
+                            )
+                        ),
+
+                    "eta_text":
+                        format_eta(
+                            data.get(
+                                "eta"
+                            )
+                        ),
+                }
+            )
+
+        # ----------------------------------------------------
+        # FINISHED DOWNLOADING
+        # ----------------------------------------------------
 
         elif status == "finished":
 
-            self.callback(
+            self._send(
                 {
                     "status":
-                        "Processing audio",
+                        "Converting to MP3",
 
                     "percent":
                         100,
+
                 }
             )
 
@@ -449,6 +857,46 @@ class YTDLPLogger:
 
 
 # ============================================================
+# DURATION FILTER
+# ============================================================
+
+def duration_filter(
+    info,
+    *,
+    incomplete,
+):
+
+    duration = info.get(
+        "duration"
+    )
+
+    if (
+        duration
+        and duration > MAX_DURATION
+    ):
+
+        max_duration = (
+            format_duration(
+                MAX_DURATION
+            )
+        )
+
+        actual_duration = (
+            format_duration(
+                duration
+            )
+        )
+
+        return (
+            f"Audio is too long. "
+            f"Maximum: {max_duration}. "
+            f"Video: {actual_duration}."
+        )
+
+    return None
+
+
+# ============================================================
 # YT-DLP OPTIONS
 # ============================================================
 
@@ -466,7 +914,7 @@ def build_ydl_options(
     options = {
 
         # ====================================================
-        # FORMAT
+        # AUDIO FORMAT
         # ====================================================
 
         "format":
@@ -479,6 +927,15 @@ def build_ydl_options(
 
         "noplaylist":
             True,
+
+        # ====================================================
+        # DURATION
+        # ====================================================
+
+        # This lets yt-dlp reject an oversized video
+        # BEFORE downloading the media.
+        "match_filter":
+            duration_filter,
 
         # ====================================================
         # OUTPUT
@@ -519,17 +976,24 @@ def build_ydl_options(
             True,
 
         # ====================================================
-        # REQUEST PACING
+        # SPEED
         # ====================================================
 
+        # The old downloader used 2-6 seconds of artificial
+        # request/download sleeping. That made single downloads
+        # noticeably slower.
         "sleep_interval_requests":
-            2,
+            0.5,
 
         "sleep_interval":
-            2,
+            0,
 
         "max_sleep_interval":
-            6,
+            0.5,
+
+        # Allow several fragments to download concurrently.
+        "concurrent_fragment_downloads":
+            4,
 
         # ====================================================
         # PROGRESS
@@ -540,7 +1004,7 @@ def build_ydl_options(
         ],
 
         # ====================================================
-        # METADATA
+        # THUMBNAIL / METADATA
         # ====================================================
 
         "writethumbnail":
@@ -645,7 +1109,7 @@ def build_ydl_options(
     # ========================================================
 
     # IMPORTANT:
-    # Use the writable runtime copy, NOT the Render
+    # Use writable /tmp copy instead of Render's
     # read-only Secret File.
 
     if RUNTIME_COOKIE_FILE.exists():
@@ -674,6 +1138,21 @@ def classify_download_error(
     lowered = (
         message.lower()
     )
+
+    # --------------------------------------------------------
+    # DURATION
+    # --------------------------------------------------------
+
+    if (
+        "audio is too long"
+        in lowered
+        or "video is too long"
+        in lowered
+    ):
+
+        return DurationTooLongError(
+            message
+        )
 
     # --------------------------------------------------------
     # RATE LIMIT
@@ -714,7 +1193,7 @@ def classify_download_error(
         )
 
     # --------------------------------------------------------
-    # COOKIES / AUTHENTICATION
+    # AUTHENTICATION
     # --------------------------------------------------------
 
     if (
@@ -794,42 +1273,6 @@ def classify_download_error(
 
 
 # ============================================================
-# EXTRACT INFO
-# ============================================================
-
-def extract_info(
-    url: str,
-    options: dict,
-):
-
-    try:
-
-        with yt_dlp.YoutubeDL(
-            options
-        ) as ydl:
-
-            info = ydl.extract_info(
-                url,
-                download=False,
-            )
-
-        if not info:
-
-            raise VideoUnavailableError(
-                "YouTube did not return "
-                "video information."
-            )
-
-        return info
-
-    except yt_dlp.utils.DownloadError as error:
-
-        raise classify_download_error(
-            error
-        ) from error
-
-
-# ============================================================
 # FIND AUDIO FILE
 # ============================================================
 
@@ -878,6 +1321,73 @@ def find_audio_file(
 
 
 # ============================================================
+# SHOULD TRY FALLBACK CLIENT?
+# ============================================================
+
+def should_try_fallback(
+    error: Exception,
+) -> bool:
+
+    message = str(
+        error
+    ).lower()
+
+    # Do NOT waste time switching clients when YouTube
+    # is explicitly rate limiting or requesting login.
+    blocked_patterns = [
+
+        "rate-limit",
+        "rate limit",
+        "http error 429",
+        "too many requests",
+
+        "sign in",
+        "not a bot",
+        "confirm you're not a bot",
+        "confirm you’re not a bot",
+
+        "authentication",
+
+        "private video",
+        "video unavailable",
+
+        "age-restricted",
+        "members-only",
+    ]
+
+    for pattern in blocked_patterns:
+
+        if pattern in message:
+
+            return False
+
+    # Client fallback is useful for media/client-specific
+    # format and HTTP failures.
+    fallback_patterns = [
+
+        "http error 403",
+        "forbidden",
+
+        "requested format is not available",
+        "format is not available",
+
+        "unable to download",
+        "unable to extract",
+
+        "no video formats",
+        "no formats",
+    ]
+
+    for pattern in fallback_patterns:
+
+        if pattern in message:
+
+            return True
+
+    return False
+
+
+# ============================================================
 # SINGLE CLIENT DOWNLOAD
 # ============================================================
 
@@ -908,10 +1418,9 @@ def download_with_client(
     )
 
     print(
-        "YouTube download:"
+        "YouTube download:",
+        url,
     )
-
-    print(url)
 
     print(
         "Cookies:",
@@ -921,10 +1430,9 @@ def download_with_client(
     )
 
     print(
-        "Cookie source:",
-        "writable runtime copy"
-        if RUNTIME_COOKIE_FILE.exists()
-        else "none",
+        "Target audio:",
+        f"{AUDIO_OUTPUT.upper()} "
+        f"{AUDIO_QUALITY} kbps",
     )
 
     print(
@@ -932,41 +1440,65 @@ def download_with_client(
     )
 
     # ========================================================
-    # METADATA
+    # SINGLE EXTRACTION + DOWNLOAD
     # ========================================================
+    #
+    # IMPORTANT:
+    #
+    # The old downloader did:
+    #
+    #     extract_info(download=False)
+    #
+    # then:
+    #
+    #     ydl.download()
+    #
+    # which caused yt-dlp to perform extraction work twice.
+    #
+    # Now we do it once.
+    #
 
-    info = extract_info(
-        url,
-        options,
-    )
+    try:
 
-    duration = info.get(
-        "duration"
-    )
+        with yt_dlp.YoutubeDL(
+            options
+        ) as ydl:
 
-    if (
-        duration
-        and duration > MAX_DURATION
-    ):
+            info = ydl.extract_info(
+                url,
+                download=True,
+            )
 
-        max_minutes = (
-            MAX_DURATION // 60
+    except yt_dlp.utils.DownloadError as error:
+
+        raise classify_download_error(
+            error
+        ) from error
+
+    if not info:
+
+        raise VideoUnavailableError(
+            "YouTube did not return "
+            "video information."
         )
 
-        raise DurationTooLongError(
-            f"This audio is too long. "
-            f"Maximum allowed duration is "
-            f"{max_minutes} minutes."
-        )
+    # ========================================================
+    # BASIC METADATA
+    # ========================================================
 
-    # ========================================================
-    # METADATA
-    # ========================================================
+    video_id = (
+        info.get("id")
+        or "audio"
+    )
 
     title = (
         info.get("track")
         or info.get("title")
         or "Audio"
+    )
+
+    title = sanitize_filename(
+        title
     )
 
     artist = (
@@ -981,58 +1513,40 @@ def download_with_client(
         or ""
     )
 
-    thumbnail = (
-        info.get("thumbnail")
-        or ""
-    )
-
-    webpage_url = (
-        info.get("webpage_url")
-        or url
-    )
-
-    video_id = (
-        info.get("id")
-        or "audio"
-    )
-
-    print(
-        "Title:",
-        title,
-    )
-
-    print(
-        "Artist:",
-        artist,
-    )
-
-    print(
-        "Video ID:",
-        video_id,
+    duration = info.get(
+        "duration"
     )
 
     # ========================================================
-    # DOWNLOAD
+    # SOURCE QUALITY
     # ========================================================
 
-    try:
+    source_quality = (
+        get_source_quality(
+            info
+        )
+    )
 
-        with yt_dlp.YoutubeDL(
-            options
-        ) as ydl:
+    source_bitrate = (
+        source_quality.get(
+            "source_bitrate"
+        )
+    )
 
-            ydl.download(
-                [url]
-            )
+    source_codec = (
+        source_quality.get(
+            "source_codec"
+        )
+    )
 
-    except yt_dlp.utils.DownloadError as error:
-
-        raise classify_download_error(
-            error
-        ) from error
+    source_ext = (
+        source_quality.get(
+            "source_ext"
+        )
+    )
 
     # ========================================================
-    # FIND RESULT
+    # FIND FINAL AUDIO
     # ========================================================
 
     audio_path = find_audio_file(
@@ -1042,30 +1556,85 @@ def download_with_client(
 
     if not audio_path:
 
+        # Sometimes yt-dlp may use a different
+        # filename/path after post-processing.
+        candidates = [
+
+            file
+
+            for file in job_dir.iterdir()
+
+            if (
+                file.is_file()
+                and file.suffix.lower()
+                in {
+                    ".mp3",
+                    ".m4a",
+                    ".aac",
+                    ".opus",
+                    ".ogg",
+                    ".wav",
+                    ".flac",
+                }
+            )
+        ]
+
+        if candidates:
+
+            audio_path = max(
+                candidates,
+                key=lambda x:
+                    x.stat().st_mtime,
+            )
+
+    if not audio_path:
+
         raise DownloadError(
-            "yt-dlp completed but the "
-            "audio file was not found."
+            "Audio was downloaded but "
+            "the final audio file could "
+            "not be located."
+        )
+
+    # ========================================================
+    # ACTUAL OUTPUT QUALITY
+    # ========================================================
+
+    output_quality = (
+        get_audio_quality(
+            audio_path
+        )
+    )
+
+    output_bitrate = (
+        output_quality.get(
+            "output_bitrate"
+        )
+    )
+
+    quality_text = (
+        output_quality.get(
+            "quality_text"
+        )
+    )
+
+    if not quality_text:
+
+        quality_text = (
+            f"{AUDIO_OUTPUT.upper()} "
+            f"{AUDIO_QUALITY} kbps"
         )
 
     # ========================================================
     # FILE SIZE
     # ========================================================
 
-    file_size = (
-        audio_path.stat().st_size
-    )
+    file_size = audio_path.stat().st_size
 
-    print(
-        "Final file:",
-        audio_path,
-    )
+    if file_size <= 0:
 
-    print(
-        "Final size:",
-        format_bytes(
-            file_size
-        ),
-    )
+        raise DownloadError(
+            "Downloaded audio file is empty."
+        )
 
     if (
         file_size
@@ -1073,58 +1642,83 @@ def download_with_client(
     ):
 
         raise FileTooLargeError(
-            "The final audio file is "
-            f"{format_bytes(file_size)}, "
+            "The resulting audio file "
+            f"is {format_bytes(file_size)}, "
             "which exceeds the configured "
             f"{MAX_FILE_SIZE_MB} MB limit."
         )
 
     # ========================================================
-    # RENAME
+    # FINAL PROGRESS
     # ========================================================
 
-    clean_title = sanitize_filename(
-        title,
-        90,
-    )
+    if progress_callback:
 
-    extension = (
-        audio_path.suffix.lower()
-    )
+        progress_callback(
+            {
+                "status":
+                    "Audio ready",
 
-    final_path = (
-        job_dir
-        / f"{clean_title}{extension}"
-    )
+                "percent":
+                    100,
 
-    counter = 1
+                "quality":
+                    quality_text,
 
-    while final_path.exists():
+                "output_bitrate":
+                    output_bitrate,
 
-        final_path = (
-            job_dir
-            / f"{clean_title} "
-            f"({counter}){extension}"
+                "source_bitrate":
+                    source_bitrate,
+            }
         )
 
-        counter += 1
+    # ========================================================
+    # LOG QUALITY
+    # ========================================================
 
-    if final_path != audio_path:
+    print(
+        "============================================"
+    )
 
-        try:
+    print(
+        "Audio ready:"
+    )
 
-            audio_path.rename(
-                final_path
-            )
+    print(
+        "Title:",
+        title,
+    )
 
-            audio_path = final_path
+    print(
+        "Source:",
+        f"{source_ext} / {source_codec}"
+    )
 
-        except Exception as error:
+    print(
+        "Source bitrate:",
+        (
+            f"{source_bitrate} kbps"
+            if source_bitrate
+            else "Unknown"
+        )
+    )
 
-            print(
-                "Rename failed:",
-                error,
-            )
+    print(
+        "Output:",
+        quality_text,
+    )
+
+    print(
+        "File size:",
+        format_bytes(
+            file_size
+        ),
+    )
+
+    print(
+        "============================================"
+    )
 
     # ========================================================
     # RESULT
@@ -1133,53 +1727,73 @@ def download_with_client(
     return {
 
         "path":
-            str(audio_path),
+            audio_path,
+
+        "job_dir":
+            job_dir,
 
         "filename":
             audio_path.name,
 
         "title":
-            str(title),
+            title,
 
         "artist":
-            str(artist),
+            artist,
 
         "uploader":
-            str(uploader),
+            uploader,
 
         "duration":
             duration,
 
-        "thumbnail":
-            str(thumbnail),
+        # Source information
+        "source_codec":
+            source_codec,
 
-        "webpage_url":
-            webpage_url,
+        "source_ext":
+            source_ext,
 
-        "video_id":
-            video_id,
+        "source_bitrate":
+            source_bitrate,
 
-        "filesize":
-            file_size,
+        # Final output information
+        "output_codec":
+            output_quality.get(
+                "output_codec"
+            ),
 
-        "format":
-            extension.lstrip("."),
+        "output_bitrate":
+            output_bitrate,
+
+        "sample_rate":
+            output_quality.get(
+                "sample_rate"
+            ),
+
+        "channels":
+            output_quality.get(
+                "channels"
+            ),
 
         "quality":
-            AUDIO_QUALITY,
+            quality_text,
 
-        "job_dir":
-            str(job_dir),
+        "quality_text":
+            quality_text,
+
+        "file_size":
+            file_size,
     }
 
 
 # ============================================================
-# SYNCHRONOUS DOWNLOAD
+# ASYNC DOWNLOAD
 # ============================================================
 
-def download_sync(
+async def download_audio(
     url: str,
-    output_dir: Path,
+    output_dir,
     progress_callback=None,
 ):
 
@@ -1187,8 +1801,11 @@ def download_sync(
 
     verify_cookie_file()
 
-    # Prepare a writable copy of the Render Secret File.
     prepare_cookie_file()
+
+    output_dir = Path(
+        output_dir
+    )
 
     output_dir.mkdir(
         parents=True,
@@ -1196,83 +1813,145 @@ def download_sync(
     )
 
     # ========================================================
-    # ISOLATED JOB DIRECTORY
+    # CLIENT ORDER
     # ========================================================
-
-    job_dir = Path(
-        tempfile.mkdtemp(
-            prefix="job_",
-            dir=str(output_dir),
-        )
-    )
-
-    print(
-        "Job directory:",
-        job_dir,
-    )
-
-    # ========================================================
-    # CLIENT FALLBACKS
     #
-    # mweb:
-    #   Primary client + BGUTIL
+    # mweb is primary.
     #
-    # web_safari:
-    #   HLS-capable fallback
+    # If the media/client request itself fails, fallback
+    # clients can be attempted.
     #
-    # android_vr:
-    #   Fallback client
+    # If YouTube returns bot/rate-limit/authentication errors,
+    # we DON'T waste 30-60 seconds trying every client.
     #
-    # web_embedded:
-    #   Final fallback
-    # ========================================================
 
     clients = [
+
         "mweb",
+
         "web_safari",
+
         "android_vr",
+
         "web_embedded",
     ]
 
-    last_error = None
+    loop = asyncio.get_running_loop()
 
-    try:
+    # ========================================================
+    # CALLBACK BRIDGE
+    # ========================================================
+    #
+    # yt-dlp runs inside a worker thread.
+    #
+    # Your bot currently passes an async callback:
+    #
+    #     lambda progress:
+    #         progress_callback(...)
+    #
+    # This bridge safely schedules that coroutine back onto
+    # the Telegram asyncio event loop.
+    #
+
+    def thread_safe_callback(
+        progress,
+    ):
+
+        if not progress_callback:
+
+            return
+
+        try:
+
+            result = progress_callback(
+                progress
+            )
+
+            if inspect.isawaitable(
+                result
+            ):
+
+                asyncio.run_coroutine_threadsafe(
+                    result,
+                    loop,
+                )
+
+        except Exception as error:
+
+            print(
+                "Progress bridge error:",
+                type(error).__name__,
+            )
+
+    # ========================================================
+    # SEMAPHORE
+    # ========================================================
+
+    async with _download_semaphore:
 
         for index, client in enumerate(
-            clients,
-            start=1,
+            clients
         ):
+
+            job_dir = Path(
+                tempfile.mkdtemp(
+                    prefix="audio_",
+                    dir=str(
+                        output_dir
+                    ),
+                )
+            )
 
             try:
 
-                print(
-                    "============================================"
+                # ------------------------------------------------
+                # STATUS
+                # ------------------------------------------------
+
+                thread_safe_callback(
+                    {
+                        "status":
+                            (
+                                "Connecting to YouTube"
+                                if index == 0
+                                else
+                                f"Retrying with {client}"
+                            ),
+
+                        "percent":
+                            None,
+                    }
+                )
+
+                # ------------------------------------------------
+                # DOWNLOAD
+                # ------------------------------------------------
+
+                result = await asyncio.wait_for(
+
+                    asyncio.get_running_loop()
+                    .run_in_executor(
+
+                        None,
+
+                        lambda: (
+                            download_with_client(
+                                url=url,
+                                job_dir=job_dir,
+                                progress_callback=
+                                    thread_safe_callback,
+                                player_client=
+                                    client,
+                            )
+                        ),
+                    ),
+
+                    timeout=DOWNLOAD_TIMEOUT,
                 )
 
                 print(
-                    f"Download attempt "
-                    f"{index}/{len(clients)}"
-                )
-
-                print(
-                    "Client:",
-                    client,
-                )
-
-                print(
-                    "============================================"
-                )
-
-                result = download_with_client(
-                    url=url,
-                    job_dir=job_dir,
-                    progress_callback=progress_callback,
-                    player_client=client,
-                )
-
-                print(
-                    "SUCCESS with client:",
-                    client,
+                    f"Download successful "
+                    f"using client: {client}"
                 )
 
                 return result
@@ -1283,96 +1962,136 @@ def download_sync(
                 VideoUnavailableError,
             ):
 
+                shutil.rmtree(
+                    job_dir,
+                    ignore_errors=True,
+                )
+
                 raise
 
             except DownloadError as error:
 
-                last_error = error
-
                 print(
-                    "Client failed:",
-                    client,
+                    f"Client {client} failed:",
+                    str(error),
                 )
 
-                print(
-                    "Reason:",
-                    error,
+                shutil.rmtree(
+                    job_dir,
+                    ignore_errors=True,
                 )
 
-                if index < len(clients):
+                # ------------------------------------------------
+                # STOP IMMEDIATELY FOR NON-FALLBACK ERRORS
+                # ------------------------------------------------
 
-                    delay = (
-                        RETRY_BACKOFF
-                        * index
+                if not should_try_fallback(
+                    error
+                ):
+
+                    raise
+
+                # ------------------------------------------------
+                # NO NEED TO WAIT AFTER LAST CLIENT
+                # ------------------------------------------------
+
+                if index >= (
+                    len(clients) - 1
+                ):
+
+                    raise
+
+                # ------------------------------------------------
+                # SHORT FALLBACK DELAY
+                # ------------------------------------------------
+
+                if FALLBACK_DELAY > 0:
+
+                    await asyncio.sleep(
+                        FALLBACK_DELAY
                     )
 
-                    print(
-                        f"Waiting {delay} seconds "
-                        "before next client..."
+            except asyncio.TimeoutError:
+
+                print(
+                    f"Client {client} "
+                    "timed out."
+                )
+
+                shutil.rmtree(
+                    job_dir,
+                    ignore_errors=True,
+                )
+
+                raise DownloadError(
+                    "The download timed out."
+                )
+
+            except Exception as error:
+
+                print(
+                    f"Unexpected error with "
+                    f"{client}:",
+                    type(error).__name__,
+                    str(error),
+                )
+
+                shutil.rmtree(
+                    job_dir,
+                    ignore_errors=True,
+                )
+
+                if index >= (
+                    len(clients) - 1
+                ):
+
+                    raise DownloadError(
+                        str(error)[:700]
+                    ) from error
+
+                if FALLBACK_DELAY > 0:
+
+                    await asyncio.sleep(
+                        FALLBACK_DELAY
                     )
-
-                    time.sleep(
-                        delay
-                    )
-
-        if last_error:
-
-            raise last_error
 
         raise DownloadError(
-            "All YouTube download methods failed."
+            "All YouTube download clients failed."
         )
-
-    except Exception:
-
-        # Failed job = safe to remove completely.
-
-        shutil.rmtree(
-            job_dir,
-            ignore_errors=True,
-        )
-
-        raise
 
 
 # ============================================================
-# ASYNC WRAPPER
+# CLEANUP
 # ============================================================
 
-async def download_audio(
-    url: str,
-    output_dir: Path,
-    progress_callback=None,
+def cleanup_job_directory(
+    job_dir,
 ):
 
-    async with _download_semaphore:
+    if not job_dir:
 
-        loop = (
-            asyncio.get_running_loop()
+        return
+
+    try:
+
+        path = Path(
+            job_dir
         )
 
-        try:
+        if path.exists():
 
-            return await asyncio.wait_for(
-
-                loop.run_in_executor(
-
-                    None,
-
-                    lambda:
-                        download_sync(
-                            url,
-                            output_dir,
-                            progress_callback,
-                        ),
-                ),
-
-                timeout=DOWNLOAD_TIMEOUT,
+            shutil.rmtree(
+                path,
+                ignore_errors=True,
             )
 
-        except asyncio.TimeoutError:
-
-            raise DownloadError(
-                "The download took too long. "
-                "Please try again later."
+            print(
+                f"Cleaned job directory: {path}"
             )
+
+    except Exception as error:
+
+        print(
+            "Job cleanup error:",
+            type(error).__name__,
+        )
