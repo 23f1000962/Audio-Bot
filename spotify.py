@@ -1,27 +1,30 @@
 """
 Spotify search integration for Audio Bot.
 
-Spotify mode is explicitly triggered by:
+Supported Spotify triggers:
+
     <song name> spotify
     <song name> - spotify
     spotify <song name>
     spotify - <song name>
 
-Direct Spotify track URLs are also recognized.
+This module uses the RapidAPI Spotify Search endpoint
+for Spotify metadata/search only.
 
-This module uses the RapidAPI Spotify Search endpoint.
+IMPORTANT:
+This module does NOT download Spotify audio.
 
 RapidAPI host:
     spotify-downloader9.p.rapidapi.com
 
-Search parameters:
-    q
-    type=tracks
-    limit
+Search endpoint:
+    GET /search
 
 Environment variables:
     RAPIDAPI_KEY
     RAPIDAPI_HOST
+    SPOTIFY_SEARCH_LIMIT
+    SPOTIFY_TIMEOUT
 """
 
 from __future__ import annotations
@@ -56,22 +59,29 @@ SPOTIFY_SEARCH_URL = (
     f"https://{RAPIDAPI_HOST}/search"
 )
 
-SPOTIFY_TIMEOUT = int(
-    os.getenv(
-        "SPOTIFY_TIMEOUT",
-        "20",
-    )
+SPOTIFY_TIMEOUT = max(
+    5,
+    int(
+        os.getenv(
+            "SPOTIFY_TIMEOUT",
+            "20",
+        )
+    ),
 )
 
-# Number of Spotify results returned to the bot.
-SPOTIFY_SEARCH_LIMIT = int(
-    os.getenv(
-        "SPOTIFY_SEARCH_LIMIT",
-        "8",
-    )
+SPOTIFY_SEARCH_LIMIT = max(
+    1,
+    min(
+        10,
+        int(
+            os.getenv(
+                "SPOTIFY_SEARCH_LIMIT",
+                "8",
+            )
+        ),
+    ),
 )
 
-# Maximum allowed results.
 SPOTIFY_MAX_RESULTS = 20
 
 
@@ -81,6 +91,7 @@ SPOTIFY_MAX_RESULTS = 20
 
 SPOTIFY_URL_PATTERN = re.compile(
     r"https?://(?:open\.)?spotify\.com/"
+    r"(?:intl-[^/]+/)?"
     r"(track|album|playlist|artist)/"
     r"([A-Za-z0-9]+)",
     re.IGNORECASE,
@@ -88,7 +99,7 @@ SPOTIFY_URL_PATTERN = re.compile(
 
 SPOTIFY_TRACK_URL_PATTERN = re.compile(
     r"https?://(?:open\.)?spotify\.com/"
-    r"track/"
+    r"(?:intl-[^/]+/)?track/"
     r"([A-Za-z0-9]+)",
     re.IGNORECASE,
 )
@@ -99,15 +110,36 @@ SPOTIFY_ID_PATTERN = re.compile(
 
 
 # ============================================================
-# SPOTIFY COMMAND DETECTION
+# BASIC HELPERS
+# ============================================================
+
+def clean_text(
+    value: Any,
+    default: str = "",
+) -> str:
+
+    if value is None:
+        return default
+
+    return str(value).strip()
+
+
+def escape_html(
+    value: Any,
+) -> str:
+
+    return html.escape(
+        clean_text(value)
+    )
+
+
+# ============================================================
+# SPOTIFY URL DETECTION
 # ============================================================
 
 def is_spotify_url(
     text: str,
 ) -> bool:
-    """
-    Check whether text contains a Spotify URL.
-    """
 
     if not text:
         return False
@@ -119,21 +151,76 @@ def is_spotify_url(
     )
 
 
+def parse_spotify_url(
+    url: str,
+) -> tuple[str, str] | None:
+
+    if not url:
+        return None
+
+    match = SPOTIFY_URL_PATTERN.search(
+        url.strip()
+    )
+
+    if not match:
+        return None
+
+    return (
+        match.group(1).lower(),
+        match.group(2),
+    )
+
+
+def extract_spotify_track_id(
+    url: str,
+) -> str | None:
+
+    if not url:
+        return None
+
+    match = SPOTIFY_TRACK_URL_PATTERN.search(
+        url.strip()
+    )
+
+    if not match:
+        return None
+
+    spotify_id = match.group(1)
+
+    if not SPOTIFY_ID_PATTERN.fullmatch(
+        spotify_id
+    ):
+        return None
+
+    return spotify_id
+
+
+def build_spotify_url(
+    spotify_id: str,
+) -> str:
+
+    return (
+        "https://open.spotify.com/track/"
+        f"{spotify_id}"
+    )
+
+
+# ============================================================
+# SPOTIFY SEARCH DETECTION
+# ============================================================
+
 def is_spotify_search(
     text: str,
 ) -> bool:
     """
-    Determine whether the user explicitly requested
-    Spotify search.
-
-    Supported forms:
+    Supported:
 
         Apna Bana Le spotify
         Apna Bana Le - spotify
         spotify Apna Bana Le
         spotify - Apna Bana Le
 
-    Case-insensitive.
+    Direct Spotify URLs are also recognized.
     """
 
     if not text:
@@ -150,7 +237,7 @@ def is_spotify_search(
 
     # "song spotify"
     if re.search(
-        r"(?:^|\s|-)spotify\s*$",
+        r"(?:^|\s)spotify\s*$",
         value,
         re.IGNORECASE,
     ):
@@ -179,21 +266,21 @@ def clean_spotify_query(
     text: str,
 ) -> str:
     """
-    Remove the Spotify trigger from a user query.
+    Remove the Spotify trigger.
 
     Examples:
 
-        "Apna Bana Le spotify"
-            -> "Apna Bana Le"
+        Apna Bana Le spotify
+        -> Apna Bana Le
 
-        "Apna Bana Le - spotify"
-            -> "Apna Bana Le"
+        Apna Bana Le - spotify
+        -> Apna Bana Le
 
-        "spotify Apna Bana Le"
-            -> "Apna Bana Le"
+        spotify Apna Bana Le
+        -> Apna Bana Le
 
-        "spotify - Apna Bana Le"
-            -> "Apna Bana Le"
+        spotify - Apna Bana Le
+        -> Apna Bana Le
     """
 
     if not text:
@@ -201,14 +288,11 @@ def clean_spotify_query(
 
     query = text.strip()
 
-    # Remove Spotify URL handling separately.
+    # Direct URL should remain untouched.
     if is_spotify_url(query):
         return query
 
-    # --------------------------------------------------------
-    # "spotify - song"
-    # --------------------------------------------------------
-
+    # spotify - song
     query = re.sub(
         r"^\s*spotify\s*-\s*",
         "",
@@ -216,27 +300,16 @@ def clean_spotify_query(
         flags=re.IGNORECASE,
     )
 
-    # --------------------------------------------------------
-    # "spotify song"
-    # --------------------------------------------------------
-
-    if re.match(
+    # spotify song
+    query = re.sub(
         r"^\s*spotify\s+",
+        "",
         query,
-        re.IGNORECASE,
-    ):
-        query = re.sub(
-            r"^\s*spotify\s+",
-            "",
-            query,
-            count=1,
-            flags=re.IGNORECASE,
-        )
+        count=1,
+        flags=re.IGNORECASE,
+    )
 
-    # --------------------------------------------------------
-    # "song - spotify"
-    # --------------------------------------------------------
-
+    # song - spotify
     query = re.sub(
         r"\s*-\s*spotify\s*$",
         "",
@@ -244,10 +317,7 @@ def clean_spotify_query(
         flags=re.IGNORECASE,
     )
 
-    # --------------------------------------------------------
-    # "song spotify"
-    # --------------------------------------------------------
-
+    # song spotify
     query = re.sub(
         r"\s+spotify\s*$",
         "",
@@ -259,122 +329,16 @@ def clean_spotify_query(
 
 
 # ============================================================
-# URL HELPERS
-# ============================================================
-
-def parse_spotify_url(
-    url: str,
-) -> tuple[str, str] | None:
-    """
-    Extract Spotify resource type and ID.
-
-    Example:
-
-        https://open.spotify.com/track/7jT3LcNj4XPYOlbNkPWNhU
-
-    Returns:
-
-        ("track", "7jT3LcNj4XPYOlbNkPWNhU")
-    """
-
-    if not url:
-        return None
-
-    match = SPOTIFY_URL_PATTERN.search(
-        url.strip()
-    )
-
-    if not match:
-        return None
-
-    return (
-        match.group(1).lower(),
-        match.group(2),
-    )
-
-
-def extract_spotify_track_id(
-    url: str,
-) -> str | None:
-    """
-    Extract a Spotify track ID from a track URL.
-    """
-
-    if not url:
-        return None
-
-    match = SPOTIFY_TRACK_URL_PATTERN.search(
-        url.strip()
-    )
-
-    if not match:
-        return None
-
-    spotify_id = match.group(1)
-
-    if not SPOTIFY_ID_PATTERN.fullmatch(
-        spotify_id
-    ):
-        return None
-
-    return spotify_id
-
-
-def build_spotify_url(
-    spotify_id: str,
-) -> str:
-    """
-    Build a Spotify track URL.
-    """
-
-    return (
-        "https://open.spotify.com/track/"
-        f"{spotify_id}"
-    )
-
-
-# ============================================================
-# TEXT HELPERS
-# ============================================================
-
-def clean_text(
-    value: Any,
-    default: str = "",
-) -> str:
-    """
-    Safely convert a value into a clean string.
-    """
-
-    if value is None:
-        return default
-
-    return str(value).strip()
-
-
-def escape_html(
-    value: Any,
-) -> str:
-    """
-    Escape text before displaying it in Telegram HTML.
-    """
-
-    return html.escape(
-        clean_text(value)
-    )
-
-
-# ============================================================
 # ARTIST EXTRACTION
 # ============================================================
 
 def extract_artists(
     item: dict[str, Any],
 ) -> list[str]:
-    """
-    Extract artist names from possible API formats.
-    """
 
-    artists = item.get("artists")
+    artists = item.get(
+        "artists"
+    )
 
     if not artists:
         return []
@@ -385,18 +349,21 @@ def extract_artists(
         artists,
         list,
     ):
+
         for artist in artists:
 
             if isinstance(
                 artist,
                 str,
             ):
+
                 name = artist.strip()
 
             elif isinstance(
                 artist,
                 dict,
             ):
+
                 name = clean_text(
                     artist.get("name")
                     or artist.get("title")
@@ -412,6 +379,7 @@ def extract_artists(
         artists,
         str,
     ):
+
         result = [
             artist.strip()
             for artist in artists.split(",")
@@ -424,9 +392,6 @@ def extract_artists(
 def extract_artist(
     item: dict[str, Any],
 ) -> str:
-    """
-    Extract a formatted artist string.
-    """
 
     artists = extract_artists(
         item
@@ -450,12 +415,11 @@ def extract_artist(
 def extract_cover(
     item: dict[str, Any],
 ) -> str | None:
-    """
-    Extract artwork URL from possible API formats.
-    """
 
-    # Direct cover field.
-    cover = item.get("cover")
+    # Direct cover.
+    cover = item.get(
+        "cover"
+    )
 
     if isinstance(
         cover,
@@ -464,7 +428,7 @@ def extract_cover(
 
         return cover.strip()
 
-    # Other common fields.
+    # Common image fields.
     for key in (
         "thumbnail",
         "image",
@@ -472,7 +436,9 @@ def extract_cover(
         "cover_url",
     ):
 
-        value = item.get(key)
+        value = item.get(
+            key
+        )
 
         if isinstance(
             value,
@@ -506,7 +472,7 @@ def extract_cover(
             if url:
                 return url
 
-    # Album-level artwork.
+    # Album artwork.
     album = item.get(
         "album"
     )
@@ -533,14 +499,6 @@ def extract_cover(
 def format_duration(
     value: Any,
 ) -> str:
-    """
-    Format duration.
-
-    Supports:
-        milliseconds
-        seconds
-        already formatted strings
-    """
 
     if value is None:
         return ""
@@ -556,6 +514,7 @@ def format_duration(
             return value
 
     try:
+
         number = float(
             value
         )
@@ -564,14 +523,18 @@ def format_duration(
         TypeError,
         ValueError,
     ):
+
         return ""
 
-    # Spotify duration_ms is normally > 10000.
+    # Spotify normally returns duration_ms.
     if number > 10000:
+
         total_seconds = int(
             number / 1000
         )
+
     else:
+
         total_seconds = int(
             number
         )
@@ -590,6 +553,7 @@ def format_duration(
     )
 
     if hours:
+
         return (
             f"{hours}:"
             f"{minutes:02d}:"
@@ -603,16 +567,15 @@ def format_duration(
 
 
 # ============================================================
-# RESPONSE EXTRACTION
+# API RESPONSE EXTRACTION
 # ============================================================
 
 def find_track_items(
     payload: Any,
 ) -> list[dict[str, Any]]:
     """
-    Extract track objects from the API response.
-
-    Supports multiple common response structures.
+    Handle several response structures used by
+    RapidAPI providers.
     """
 
     if not isinstance(
@@ -621,7 +584,7 @@ def find_track_items(
     ):
         return []
 
-    candidates: list[Any] = [
+    candidates = [
         payload,
         payload.get("data"),
         payload.get("result"),
@@ -636,7 +599,10 @@ def find_track_items(
         ):
             continue
 
+        # ----------------------------------------------------
         # tracks: [...]
+        # ----------------------------------------------------
+
         tracks = candidate.get(
             "tracks"
         )
@@ -655,7 +621,10 @@ def find_track_items(
                 )
             ]
 
+        # ----------------------------------------------------
         # tracks: {items: [...]}
+        # ----------------------------------------------------
+
         if isinstance(
             tracks,
             dict,
@@ -679,7 +648,10 @@ def find_track_items(
                     )
                 ]
 
+        # ----------------------------------------------------
         # items: [...]
+        # ----------------------------------------------------
+
         items = candidate.get(
             "items"
         )
@@ -705,16 +677,12 @@ def find_track_items(
 
 
 # ============================================================
-# NORMALIZATION
+# TRACK NORMALIZATION
 # ============================================================
 
 def normalize_track(
     item: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Convert an API result into the bot's
-    internal Spotify track format.
-    """
 
     spotify_id = clean_text(
         item.get("id")
@@ -778,6 +746,7 @@ def normalize_track(
         )
 
     if not spotify_url and spotify_id:
+
         spotify_url = build_spotify_url(
             spotify_id
         )
@@ -787,19 +756,15 @@ def normalize_track(
         "title": title,
         "artist": artist,
         "album": album,
-        "cover": extract_cover(
-            item
-        ),
-        "duration": format_duration(
-            duration
-        ),
+        "cover": extract_cover(item),
+        "duration": format_duration(duration),
         "spotify_url": spotify_url,
         "raw": item,
     }
 
 
 # ============================================================
-# RAPIDAPI SEARCH
+# RAPIDAPI REQUEST
 # ============================================================
 
 def search_tracks(
@@ -807,21 +772,22 @@ def search_tracks(
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Search Spotify tracks using RapidAPI.
+    Search Spotify metadata through RapidAPI.
 
-    Parameters:
+    This endpoint is used ONLY for search/metadata.
 
-        q
-        type=tracks
-        limit
+    It is deliberately not used to download Spotify
+    audio.
     """
 
     if not RAPIDAPI_KEY:
+
         raise RuntimeError(
             "RAPIDAPI_KEY is not configured."
         )
 
     if not RAPIDAPI_HOST:
+
         raise RuntimeError(
             "RAPIDAPI_HOST is not configured."
         )
@@ -856,7 +822,7 @@ def search_tracks(
     }
 
     logger.info(
-        "Spotify search: %s",
+        "Spotify search query: %s",
         query,
     )
 
@@ -869,6 +835,13 @@ def search_tracks(
             timeout=SPOTIFY_TIMEOUT,
         )
 
+    except requests.Timeout as exc:
+
+        raise RuntimeError(
+            "Spotify search timed out. "
+            "Please try again."
+        ) from exc
+
     except requests.RequestException as exc:
 
         logger.exception(
@@ -876,33 +849,30 @@ def search_tracks(
         )
 
         raise RuntimeError(
-            "Unable to connect to the Spotify API."
+            "Unable to connect to the Spotify Search API."
         ) from exc
 
-    # --------------------------------------------------------
-    # RATE LIMIT
-    # --------------------------------------------------------
+    # ========================================================
+    # HTTP STATUS
+    # ========================================================
 
     if response.status_code == 429:
 
-        reset = response.headers.get(
-            "X-RateLimit-Reset"
+        retry_after = response.headers.get(
+            "Retry-After"
         )
 
-        if reset:
+        if retry_after:
+
             raise RuntimeError(
                 "Spotify API rate limit reached. "
-                f"Try again after {reset}."
+                f"Retry after {retry_after} seconds."
             )
 
         raise RuntimeError(
             "Spotify API rate limit reached. "
             "Please try again later."
         )
-
-    # --------------------------------------------------------
-    # AUTH
-    # --------------------------------------------------------
 
     if response.status_code in (
         401,
@@ -911,12 +881,8 @@ def search_tracks(
 
         raise RuntimeError(
             "RapidAPI authentication failed. "
-            "Check RAPIDAPI_KEY and your API subscription."
+            "Check RAPIDAPI_KEY and the API subscription."
         )
-
-    # --------------------------------------------------------
-    # NOT FOUND
-    # --------------------------------------------------------
 
     if response.status_code == 404:
 
@@ -925,22 +891,21 @@ def search_tracks(
             "Check RAPIDAPI_HOST."
         )
 
-    # --------------------------------------------------------
-    # OTHER ERRORS
-    # --------------------------------------------------------
-
     if not response.ok:
 
-        body = response.text[:500]
+        body = response.text.strip()
+
+        if len(body) > 500:
+            body = body[:500]
 
         raise RuntimeError(
-            "Spotify API error "
+            "Spotify API returned HTTP "
             f"{response.status_code}: {body}"
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # JSON
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -952,9 +917,9 @@ def search_tracks(
             "Spotify API returned invalid JSON."
         ) from exc
 
-    # --------------------------------------------------------
+    # ========================================================
     # API SUCCESS FLAG
-    # --------------------------------------------------------
+    # ========================================================
 
     if isinstance(
         payload,
@@ -969,6 +934,17 @@ def search_tracks(
                 "error"
             )
 
+            if isinstance(
+                error,
+                dict,
+            ):
+
+                error = (
+                    error.get("message")
+                    or error.get("detail")
+                    or str(error)
+                )
+
             raise RuntimeError(
                 clean_text(
                     error,
@@ -976,22 +952,41 @@ def search_tracks(
                 )
             )
 
-    # --------------------------------------------------------
-    # RESULTS
-    # --------------------------------------------------------
+    # ========================================================
+    # EXTRACT RESULTS
+    # ========================================================
 
     items = find_track_items(
         payload
     )
 
-    return [
-        normalize_track(item)
-        for item in items[:limit]
-    ]
+    if not items:
+        return []
+
+    results = []
+
+    for item in items[:limit]:
+
+        track = normalize_track(
+            item
+        )
+
+        # Do not display completely unusable results.
+        if (
+            not track["title"]
+            or track["title"] == "Unknown Track"
+        ):
+            continue
+
+        results.append(
+            track
+        )
+
+    return results
 
 
 # ============================================================
-# SEARCH FOR USER QUERY
+# MAIN SEARCH FUNCTION
 # ============================================================
 
 def search_spotify(
@@ -999,19 +994,18 @@ def search_spotify(
     limit: int | None = None,
 ) -> dict[str, Any]:
     """
-    Process a user Spotify request.
+    Process a Spotify request.
 
-    Example:
+    Text search:
+        Apna Bana Le spotify
 
-        "Apna Bana Le - spotify"
+    Direct URL:
+        https://open.spotify.com/track/...
 
-    Returns:
-
-        {
-            "query": "Apna Bana Le",
-            "results": [...],
-            "is_spotify": True
-        }
+    NOTE:
+    Direct Spotify URLs are detected and returned as
+    URL metadata, but are not sent to the /search
+    endpoint because /search requires text.
     """
 
     if not is_spotify_search(
@@ -1020,6 +1014,7 @@ def search_spotify(
 
         return {
             "is_spotify": False,
+            "is_url": False,
             "query": clean_text(
                 user_text
             ),
@@ -1030,22 +1025,46 @@ def search_spotify(
         user_text
     )
 
-    # A direct Spotify URL currently gives
-    # us the Spotify ID, but the Search endpoint
-    # requires q text. We therefore don't pretend
-    # the URL itself is a search query.
+    # ========================================================
+    # DIRECT SPOTIFY URL
+    # ========================================================
+
     if is_spotify_url(query):
+
+        resource = parse_spotify_url(
+            query
+        )
+
+        resource_type = (
+            resource[0]
+            if resource
+            else None
+        )
+
+        resource_id = (
+            resource[1]
+            if resource
+            else None
+        )
 
         return {
             "is_spotify": True,
             "is_url": True,
             "query": "",
             "spotify_url": query,
-            "track_id": extract_spotify_track_id(
-                query
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "track_id": (
+                extract_spotify_track_id(
+                    query
+                )
             ),
             "results": [],
         }
+
+    # ========================================================
+    # EMPTY QUERY
+    # ========================================================
 
     if not query:
 
@@ -1055,6 +1074,10 @@ def search_spotify(
             "query": "",
             "results": [],
         }
+
+    # ========================================================
+    # TEXT SEARCH
+    # ========================================================
 
     results = search_tracks(
         query,
@@ -1070,31 +1093,28 @@ def search_spotify(
 
 
 # ============================================================
-# TELEGRAM RESULT FORMAT
+# TELEGRAM FORMATTING
 # ============================================================
 
 def format_result(
     track: dict[str, Any],
     number: int,
 ) -> str:
-    """
-    Format one search result for Telegram.
-    """
 
     title = escape_html(
-        track.get("title"),
+        track.get("title")
     )
 
     artist = escape_html(
-        track.get("artist"),
+        track.get("artist")
     )
 
     album = escape_html(
-        track.get("album"),
+        track.get("album")
     )
 
     duration = escape_html(
-        track.get("duration"),
+        track.get("duration")
     )
 
     lines = [
@@ -1121,10 +1141,6 @@ def format_search_results(
     query: str,
     results: list[dict[str, Any]],
 ) -> str:
-    """
-    Format the complete Spotify search
-    result list for Telegram.
-    """
 
     safe_query = escape_html(
         query
@@ -1172,9 +1188,6 @@ def format_search_results(
 # ============================================================
 
 def spotify_status() -> dict[str, Any]:
-    """
-    Return safe integration status.
-    """
 
     return {
         "configured": bool(
@@ -1184,6 +1197,7 @@ def spotify_status() -> dict[str, Any]:
         "search_url": SPOTIFY_SEARCH_URL,
         "search_type": "tracks",
         "search_limit": SPOTIFY_SEARCH_LIMIT,
+        "audio_download": False,
     }
 
 
@@ -1194,9 +1208,6 @@ def spotify_status() -> dict[str, Any]:
 def friendly_error(
     error: Exception,
 ) -> str:
-    """
-    Convert exceptions into Telegram-friendly messages.
-    """
 
     message = clean_text(
         error
@@ -1204,7 +1215,10 @@ def friendly_error(
 
     lowered = message.lower()
 
-    if "rate limit" in lowered:
+    if (
+        "rate limit" in lowered
+        or "429" in lowered
+    ):
 
         return (
             "⏳ <b>Spotify search is temporarily "
@@ -1215,6 +1229,8 @@ def friendly_error(
     if (
         "authentication" in lowered
         or "rapidapi_key" in lowered
+        or "401" in lowered
+        or "403" in lowered
     ):
 
         return (
@@ -1222,11 +1238,21 @@ def friendly_error(
             "Check the RapidAPI key and subscription."
         )
 
-    if "not found" in lowered:
+    if (
+        "not found" in lowered
+        or "404" in lowered
+    ):
 
         return (
             "❌ <b>Spotify Search API was not found.</b>\n\n"
             "Check the configured RapidAPI host."
+        )
+
+    if "timed out" in lowered:
+
+        return (
+            "⏱️ <b>Spotify search timed out.</b>\n\n"
+            "Please try again."
         )
 
     return (
