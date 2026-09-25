@@ -19,7 +19,6 @@ RUN apt-get update && \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Deno
 RUN curl -fsSL https://deno.land/install.sh | sh && \
     deno upgrade --version 2.9.7 && \
     deno --version
@@ -27,7 +26,6 @@ RUN curl -fsSL https://deno.land/install.sh | sh && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install BGUTIL PO Token Provider
 RUN git clone \
         --single-branch \
         --branch 2.0.0 \
@@ -45,6 +43,7 @@ WORKDIR /app
 
 COPY bot.py .
 COPY downloader.py .
+COPY spotify.py .
 COPY start.sh .
 
 RUN chmod +x /app/start.sh
