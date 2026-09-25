@@ -66,6 +66,71 @@ RETRY_BACKOFF = max(
 
 
 # ============================================================
+# YOUTUBE COOKIES
+# ============================================================
+
+# Render Secret File:
+#
+# Render Dashboard
+#     ↓
+# Environment
+#     ↓
+# Secret Files
+#     ↓
+# cookies.txt
+#
+# Render exposes it as:
+#
+# /etc/secrets/cookies.txt
+#
+# NEVER put this file in GitHub.
+# NEVER print its contents.
+# NEVER log cookie values.
+
+COOKIE_FILE = Path(
+    os.getenv(
+        "YOUTUBE_COOKIE_FILE",
+        "/etc/secrets/cookies.txt"
+    )
+)
+
+
+def cookies_available() -> bool:
+
+    try:
+
+        return (
+            COOKIE_FILE.exists()
+            and COOKIE_FILE.is_file()
+            and COOKIE_FILE.stat().st_size > 0
+        )
+
+    except Exception:
+
+        return False
+
+
+def verify_cookie_file():
+
+    if cookies_available():
+
+        print(
+            "YouTube cookies: available"
+        )
+
+        return
+
+    print(
+        "YouTube cookies: NOT FOUND"
+    )
+
+    print(
+        f"Expected cookie file: "
+        f"{COOKIE_FILE}"
+    )
+
+
+# ============================================================
 # INTERNAL CONCURRENCY
 # ============================================================
 
@@ -82,15 +147,21 @@ class DownloadError(Exception):
     pass
 
 
-class FileTooLargeError(DownloadError):
+class FileTooLargeError(
+    DownloadError
+):
     pass
 
 
-class DurationTooLongError(DownloadError):
+class DurationTooLongError(
+    DownloadError
+):
     pass
 
 
-class VideoUnavailableError(DownloadError):
+class VideoUnavailableError(
+    DownloadError
+):
     pass
 
 
@@ -130,6 +201,7 @@ def sanitize_filename(
     )
 
     if not filename:
+
         filename = "audio"
 
     return filename[:max_length]
@@ -137,10 +209,13 @@ def sanitize_filename(
 
 def ensure_ffmpeg():
 
-    if not shutil.which("ffmpeg"):
+    if not shutil.which(
+        "ffmpeg"
+    ):
 
         raise DownloadError(
-            "FFmpeg is not installed on the server."
+            "FFmpeg is not installed on "
+            "the server."
         )
 
 
@@ -149,9 +224,12 @@ def format_bytes(
 ) -> str:
 
     if size is None:
+
         return "Unknown"
 
-    size = float(size)
+    size = float(
+        size
+    )
 
     for unit in (
         "B",
@@ -169,7 +247,9 @@ def format_bytes(
 
         size /= 1024
 
-    return f"{size:.1f} TB"
+    return (
+        f"{size:.1f} TB"
+    )
 
 
 # ============================================================
@@ -184,6 +264,7 @@ class ProgressTracker:
     ):
 
         self.callback = callback
+
         self.last_percent = -1
 
     def hook(
@@ -192,6 +273,7 @@ class ProgressTracker:
     ):
 
         if not self.callback:
+
             return
 
         status = data.get(
@@ -215,6 +297,7 @@ class ProgressTracker:
             )
 
             if not total:
+
                 return
 
             percent = (
@@ -334,9 +417,9 @@ def build_ydl_options(
 
     options = {
 
-        # ----------------------------------------------------
+        # ====================================================
         # FORMAT
-        # ----------------------------------------------------
+        # ====================================================
 
         "format":
             "bestaudio[ext=m4a]/"
@@ -349,9 +432,9 @@ def build_ydl_options(
         "noplaylist":
             True,
 
-        # ----------------------------------------------------
+        # ====================================================
         # OUTPUT
-        # ----------------------------------------------------
+        # ====================================================
 
         "quiet":
             True,
@@ -362,9 +445,9 @@ def build_ydl_options(
         "ignoreerrors":
             False,
 
-        # ----------------------------------------------------
+        # ====================================================
         # RETRIES
-        # ----------------------------------------------------
+        # ====================================================
 
         "retries":
             DOWNLOAD_RETRIES,
@@ -387,9 +470,9 @@ def build_ydl_options(
         "overwrites":
             True,
 
-        # ----------------------------------------------------
+        # ====================================================
         # REQUEST PACING
-        # ----------------------------------------------------
+        # ====================================================
 
         "sleep_interval_requests":
             2,
@@ -400,17 +483,17 @@ def build_ydl_options(
         "max_sleep_interval":
             6,
 
-        # ----------------------------------------------------
+        # ====================================================
         # PROGRESS
-        # ----------------------------------------------------
+        # ====================================================
 
         "progress_hooks": [
             progress_tracker.hook
         ],
 
-        # ----------------------------------------------------
-        # METADATA / ARTWORK
-        # ----------------------------------------------------
+        # ====================================================
+        # METADATA
+        # ====================================================
 
         "writethumbnail":
             True,
@@ -418,9 +501,9 @@ def build_ydl_options(
         "addmetadata":
             True,
 
-        # ----------------------------------------------------
-        # POSTPROCESSING
-        # ----------------------------------------------------
+        # ====================================================
+        # POST PROCESSING
+        # ====================================================
 
         "postprocessors": [
 
@@ -446,9 +529,9 @@ def build_ydl_options(
             },
         ],
 
-        # ----------------------------------------------------
+        # ====================================================
         # YOUTUBE CLIENT
-        # ----------------------------------------------------
+        # ====================================================
 
         "extractor_args": {
 
@@ -459,9 +542,9 @@ def build_ydl_options(
                 ],
             },
 
-            # ------------------------------------------------
-            # BGUTIL
-            # ------------------------------------------------
+            # =================================================
+            # BGUTIL PO TOKEN PROVIDER
+            # =================================================
 
             "youtubepot-bgutilhttp": {
 
@@ -470,9 +553,9 @@ def build_ydl_options(
             },
         },
 
-        # ----------------------------------------------------
+        # ====================================================
         # DENO
-        # ----------------------------------------------------
+        # ====================================================
 
         "js_runtimes": {
 
@@ -483,17 +566,17 @@ def build_ydl_options(
             },
         },
 
-        # ----------------------------------------------------
+        # ====================================================
         # EJS
-        # ----------------------------------------------------
+        # ====================================================
 
         "remote_components": {
             "ejs:npm",
         },
 
-        # ----------------------------------------------------
-        # HTTP
-        # ----------------------------------------------------
+        # ====================================================
+        # LANGUAGE
+        # ====================================================
 
         "http_headers": {
 
@@ -501,13 +584,25 @@ def build_ydl_options(
                 "en-US,en;q=0.9",
         },
 
-        # ----------------------------------------------------
+        # ====================================================
         # LOGGER
-        # ----------------------------------------------------
+        # ====================================================
 
         "logger":
             YTDLPLogger(),
     }
+
+    # ========================================================
+    # COOKIES
+    # ========================================================
+
+    if cookies_available():
+
+        options[
+            "cookiefile"
+        ] = str(
+            COOKIE_FILE
+        )
 
     return options
 
@@ -524,12 +619,21 @@ def classify_download_error(
         error
     )
 
-    lowered = message.lower()
+    lowered = (
+        message.lower()
+    )
+
+    # --------------------------------------------------------
+    # RATE LIMIT
+    # --------------------------------------------------------
 
     if (
-        "http error 429" in lowered
-        or "too many requests" in lowered
-        or "rate limit" in lowered
+        "http error 429"
+        in lowered
+        or "too many requests"
+        in lowered
+        or "rate limit"
+        in lowered
     ):
 
         return DownloadError(
@@ -537,9 +641,15 @@ def classify_download_error(
             "rate-limiting this server."
         )
 
+    # --------------------------------------------------------
+    # BOT CHECK
+    # --------------------------------------------------------
+
     if (
-        "sign in to confirm" in lowered
-        or "not a bot" in lowered
+        "sign in to confirm"
+        in lowered
+        or "not a bot"
+        in lowered
         or "confirm you're not a bot"
         in lowered
         or "confirm you’re not a bot"
@@ -547,13 +657,37 @@ def classify_download_error(
     ):
 
         return DownloadError(
-            "YouTube temporarily rejected "
-            "this server as automated traffic."
+            "YouTube rejected the request "
+            "as automated traffic."
         )
 
+    # --------------------------------------------------------
+    # COOKIES / AUTHENTICATION
+    # --------------------------------------------------------
+
     if (
-        "private video" in lowered
-        or "video unavailable" in lowered
+        "authentication"
+        in lowered
+        or "cookies"
+        in lowered
+        or "sign in"
+        in lowered
+    ):
+
+        return DownloadError(
+            "YouTube requires authentication "
+            "for this request."
+        )
+
+    # --------------------------------------------------------
+    # PRIVATE / UNAVAILABLE
+    # --------------------------------------------------------
+
+    if (
+        "private video"
+        in lowered
+        or "video unavailable"
+        in lowered
         or "this video is not available"
         in lowered
     ):
@@ -563,10 +697,17 @@ def classify_download_error(
             "unavailable or private."
         )
 
+    # --------------------------------------------------------
+    # AGE / MEMBERS
+    # --------------------------------------------------------
+
     if (
-        "age-restricted" in lowered
-        or "confirm your age" in lowered
-        or "members-only" in lowered
+        "age-restricted"
+        in lowered
+        or "confirm your age"
+        in lowered
+        or "members-only"
+        in lowered
     ):
 
         return VideoUnavailableError(
@@ -575,14 +716,25 @@ def classify_download_error(
             "an age restriction."
         )
 
+    # --------------------------------------------------------
+    # FORBIDDEN
+    # --------------------------------------------------------
+
     if (
-        "http error 403" in lowered
-        or "forbidden" in lowered
+        "http error 403"
+        in lowered
+        or "forbidden"
+        in lowered
     ):
 
         return DownloadError(
-            "YouTube rejected the media request."
+            "YouTube rejected the media "
+            "request."
         )
+
+    # --------------------------------------------------------
+    # GENERIC
+    # --------------------------------------------------------
 
     return DownloadError(
         message[:700]
@@ -626,7 +778,7 @@ def extract_info(
 
 
 # ============================================================
-# FIND AUDIO
+# FIND AUDIO FILE
 # ============================================================
 
 def find_audio_file(
@@ -634,7 +786,8 @@ def find_audio_file(
     video_id: str,
 ):
 
-    extensions = {
+    audio_extensions = {
+
         ".mp3",
         ".m4a",
         ".aac",
@@ -657,11 +810,12 @@ def find_audio_file(
                 f"{video_id}."
             )
             and file.suffix.lower()
-            in extensions
+            in audio_extensions
         )
     ]
 
     if not files:
+
         return None
 
     return max(
@@ -687,9 +841,9 @@ def download_with_client(
     )
 
     options = build_ydl_options(
-        job_dir,
-        tracker,
-        player_client,
+        output_dir=job_dir,
+        progress_tracker=tracker,
+        player_client=player_client,
     )
 
     print(
@@ -708,12 +862,19 @@ def download_with_client(
     print(url)
 
     print(
+        "Cookies:",
+        "enabled"
+        if cookies_available()
+        else "disabled",
+    )
+
+    print(
         "============================================"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # METADATA
-    # --------------------------------------------------------
+    # ========================================================
 
     info = extract_info(
         url,
@@ -738,6 +899,10 @@ def download_with_client(
             f"Maximum allowed duration is "
             f"{max_minutes} minutes."
         )
+
+    # ========================================================
+    # METADATA
+    # ========================================================
 
     title = (
         info.get("track")
@@ -787,9 +952,9 @@ def download_with_client(
         video_id,
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # DOWNLOAD
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -807,9 +972,9 @@ def download_with_client(
             error
         ) from error
 
-    # --------------------------------------------------------
-    # FIND FILE
-    # --------------------------------------------------------
+    # ========================================================
+    # FIND RESULT
+    # ========================================================
 
     audio_path = find_audio_file(
         job_dir,
@@ -823,6 +988,10 @@ def download_with_client(
             "audio file was not found."
         )
 
+    # ========================================================
+    # FILE SIZE
+    # ========================================================
+
     file_size = (
         audio_path.stat().st_size
     )
@@ -834,12 +1003,10 @@ def download_with_client(
 
     print(
         "Final size:",
-        format_bytes(file_size),
+        format_bytes(
+            file_size
+        ),
     )
-
-    # --------------------------------------------------------
-    # SIZE CHECK
-    # --------------------------------------------------------
 
     if (
         file_size
@@ -853,9 +1020,9 @@ def download_with_client(
             f"{MAX_FILE_SIZE_MB} MB limit."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # RENAME
-    # --------------------------------------------------------
+    # ========================================================
 
     clean_title = sanitize_filename(
         title,
@@ -899,6 +1066,10 @@ def download_with_client(
                 "Rename failed:",
                 error,
             )
+
+    # ========================================================
+    # RESULT
+    # ========================================================
 
     return {
 
@@ -955,10 +1126,16 @@ def download_sync(
 
     ensure_ffmpeg()
 
+    verify_cookie_file()
+
     output_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    # ========================================================
+    # ISOLATED JOB DIRECTORY
+    # ========================================================
 
     job_dir = Path(
         tempfile.mkdtemp(
@@ -973,14 +1150,21 @@ def download_sync(
     )
 
     # ========================================================
-    # CLIENT STRATEGY
+    # CLIENT FALLBACKS
     #
-    # 1. mweb       -> primary + BGUTIL PO token
-    # 2. web_safari -> HLS-capable fallback
-    # 3. android_vr -> no GVS PO token required
-    # 4. web_embedded -> no GVS PO token required
+    # mweb:
+    #   Primary client + BGUTIL
     #
-    # These are FALLBACKS, not simultaneous requests.
+    # web_safari:
+    #   HLS-capable fallback
+    #
+    # android_vr:
+    #   Does not currently require GVS PO token
+    #
+    # web_embedded:
+    #   Does not currently require GVS PO token,
+    #   but only works for embeddable videos.
+    #
     # ========================================================
 
     clients = [
@@ -1079,13 +1263,18 @@ def download_sync(
             "All YouTube download methods failed."
         )
 
-    finally:
+    except Exception:
 
-        # IMPORTANT:
-        # Do NOT delete a successful job here.
-        # bot.py deletes it after Telegram upload.
+        # ----------------------------------------------------
+        # Failed job = safe to remove completely
+        # ----------------------------------------------------
 
-        pass
+        shutil.rmtree(
+            job_dir,
+            ignore_errors=True,
+        )
+
+        raise
 
 
 # ============================================================
