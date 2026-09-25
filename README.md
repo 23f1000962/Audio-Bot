@@ -1,33 +1,42 @@
-# Audio Bot — RapidAPI version
+# 🎵 Audio Bot
 
-This update replaces the direct `yt-dlp` YouTube extraction flow with the RapidAPI service used in the RapidAPI screenshots.
+A Telegram bot that converts YouTube and YouTube Music links into high-quality audio.
 
-## Required environment variables
+The bot uses:
 
-- `BOT_TOKEN`
-- `RAPIDAPI_KEY`
+- Telegram Bot API
+- yt-dlp
+- FFmpeg
+- BGUTIL PO Token Provider
+- Deno
+- RapidAPI Spotify Search
 
-## RapidAPI endpoints
+---
 
-- `GET /api/v1/download`
-- `GET /api/v1/progress?id=PROGRESS_ID`
+## ✨ Features
 
-The bot requests audio as:
+### YouTube
 
-- `format=mp3`
-- `audioQuality=128`
-- `addInfo=false`
-- `allowExtendedDuration=false`
+- YouTube video links
+- YouTube Music links
+- YouTube Shorts
+- Best available audio source
+- MP3 conversion
+- Configurable audio bitrate
+- Embedded metadata
+- Embedded thumbnail/artwork
+- Human-readable filenames
+- Download progress
+- Automatic temporary-file cleanup
+- YouTube cookie authentication
+- BGUTIL PO-token support
+- Multiple YouTube client fallback
 
-## GitHub update
+### Spotify Search
 
-Replace these files in the existing repository:
+Spotify can be used to search for songs.
 
-1. `bot.py`
-2. `requirements.txt`
-3. `Dockerfile`
-4. `.env.example` (optional but recommended)
+Examples:
 
-Then add `RAPIDAPI_KEY` to your hosting provider's environment variables.
-
-Do not commit real API keys to GitHub.
+```text
+Apna Bana Le spotify
