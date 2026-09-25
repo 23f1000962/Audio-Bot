@@ -37,8 +37,16 @@ AUDIO_OUTPUT = os.getenv(
     "mp3"
 ).lower()
 
-# Target MP3 bitrate.
-# Example: 128 / 192 / 256 / 320
+# Target bitrate.
+#
+# Examples:
+# 128
+# 192
+# 256
+# 320
+#
+# Current recommended value:
+# 192
 AUDIO_QUALITY = os.getenv(
     "AUDIO_QUALITY",
     "192"
@@ -58,8 +66,8 @@ MAX_CONCURRENT_DOWNLOADS = max(
     )
 )
 
-# Delay between client fallbacks.
-# Keep this LOW for faster recovery.
+# Delay before trying another YouTube client.
+# Kept low for faster fallback.
 FALLBACK_DELAY = max(
     0,
     int(
@@ -217,31 +225,47 @@ class VideoUnavailableError(DownloadError):
 
 def sanitize_filename(
     filename: str,
-    max_length: int = 120,
+    max_length: int = 180,
 ) -> str:
+
+    """
+    Convert the YouTube title into a filesystem-safe filename.
+
+    Example:
+
+        Tera Ban Jaunga
+        ->
+        Tera Ban Jaunga
+
+    Invalid filesystem characters are replaced with "_".
+    """
 
     filename = str(
         filename or "audio"
     )
 
+    # Remove control characters.
     filename = re.sub(
         r"[\x00-\x1f\x7f]",
         "",
         filename,
     )
 
+    # Characters that are invalid on Windows/Linux filenames.
     filename = re.sub(
         r'[\\/:*?"<>|]+',
         "_",
         filename,
     )
 
+    # Collapse repeated whitespace.
     filename = re.sub(
         r"\s+",
         " ",
         filename,
     )
 
+    # Remove trailing spaces/dots.
     filename = filename.strip(
         " ."
     )
@@ -249,6 +273,36 @@ def sanitize_filename(
     if not filename:
 
         filename = "audio"
+
+    # Windows reserved filenames.
+    reserved = {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }
+
+    if filename.upper() in reserved:
+
+        filename = f"_{filename}"
 
     return filename[:max_length]
 
@@ -425,7 +479,6 @@ def clean_bitrate(
 
         return None
 
-    # yt-dlp generally reports abr/tbr in Kbps.
     if value <= 0:
 
         return None
@@ -478,9 +531,14 @@ def get_source_quality(
     )
 
     return {
-        "source_bitrate": source_bitrate,
-        "source_codec": source_codec,
-        "source_ext": source_ext,
+        "source_bitrate":
+            source_bitrate,
+
+        "source_codec":
+            source_codec,
+
+        "source_ext":
+            source_ext,
     }
 
 
@@ -489,33 +547,60 @@ def get_audio_quality(
 ) -> dict:
 
     result = {
-        "output_codec": None,
-        "output_bitrate": None,
-        "sample_rate": None,
-        "channels": None,
-        "quality_text": None,
+
+        "output_codec":
+            None,
+
+        "output_bitrate":
+            None,
+
+        "sample_rate":
+            None,
+
+        "channels":
+            None,
+
+        "quality_text":
+            None,
     }
 
     try:
 
         command = [
+
             "ffprobe",
+
             "-v",
             "error",
+
             "-select_streams",
             "a:0",
+
             "-show_entries",
-            "stream=codec_name,bit_rate,sample_rate,channels",
+
+            "stream="
+            "codec_name,"
+            "bit_rate,"
+            "sample_rate,"
+            "channels",
+
             "-of",
-            "default=noprint_wrappers=1",
+            "default="
+            "noprint_wrappers=1",
+
             str(file_path),
         ]
 
         process = subprocess.run(
+
             command,
+
             capture_output=True,
+
             text=True,
+
             timeout=20,
+
             check=False,
         )
 
@@ -540,9 +625,9 @@ def get_audio_quality(
                 )
             )
 
-            values[key.strip()] = (
-                value.strip()
-            )
+            values[
+                key.strip()
+            ] = value.strip()
 
         codec = values.get(
             "codec_name"
@@ -597,8 +682,11 @@ def get_audio_quality(
         ] = channels
 
         codec_name = (
+
             codec.upper()
+
             if codec
+
             else AUDIO_OUTPUT.upper()
         )
 
@@ -607,6 +695,7 @@ def get_audio_quality(
             result[
                 "quality_text"
             ] = (
+
                 f"{codec_name} • "
                 f"{output_bitrate} kbps"
             )
@@ -616,6 +705,7 @@ def get_audio_quality(
             result[
                 "quality_text"
             ] = (
+
                 f"{codec_name} • "
                 f"{AUDIO_QUALITY} kbps target"
             )
@@ -684,9 +774,9 @@ class ProgressTracker:
             "status"
         )
 
-        # ----------------------------------------------------
+        # ====================================================
         # DOWNLOADING
-        # ----------------------------------------------------
+        # ====================================================
 
         if status == "downloading":
 
@@ -696,9 +786,11 @@ class ProgressTracker:
             )
 
             total = (
+
                 data.get(
                     "total_bytes"
                 )
+
                 or data.get(
                     "total_bytes_estimate"
                 )
@@ -709,6 +801,7 @@ class ProgressTracker:
             if total:
 
                 percent = (
+
                     downloaded
                     / total
                     * 100
@@ -724,19 +817,29 @@ class ProgressTracker:
 
             now = time.monotonic()
 
-            # Update Telegram roughly every 1.5 seconds
-            # OR whenever progress moves by >= 2%.
+            # Telegram message updates are throttled.
+            #
+            # Update approximately every 1.5 seconds
+            # OR when progress changes by >= 2%.
+
             should_update = (
+
                 self.last_percent < 0
+
                 or (
+
                     percent is not None
+
                     and (
+
                         percent
                         - self.last_percent
                         >= 2
                     )
                 )
+
                 or (
+
                     now
                     - self.last_update_time
                     >= 1.5
@@ -757,6 +860,7 @@ class ProgressTracker:
 
             self._send(
                 {
+
                     "status":
                         "Downloading",
 
@@ -795,20 +899,20 @@ class ProgressTracker:
                 }
             )
 
-        # ----------------------------------------------------
-        # FINISHED DOWNLOADING
-        # ----------------------------------------------------
+        # ====================================================
+        # DOWNLOAD FINISHED
+        # ====================================================
 
         elif status == "finished":
 
             self._send(
                 {
+
                     "status":
                         "Converting to MP3",
 
                     "percent":
                         100,
-
                 }
             )
 
@@ -871,8 +975,11 @@ def duration_filter(
     )
 
     if (
+
         duration
-        and duration > MAX_DURATION
+
+        and duration
+        > MAX_DURATION
     ):
 
         max_duration = (
@@ -888,6 +995,7 @@ def duration_filter(
         )
 
         return (
+
             f"Audio is too long. "
             f"Maximum: {max_duration}. "
             f"Video: {actual_duration}."
@@ -906,34 +1014,61 @@ def build_ydl_options(
     player_client: str,
 ):
 
+    # ========================================================
+    # IMPORTANT
+    # ========================================================
+    #
+    # Use YouTube TITLE as the filename.
+    #
+    # Example:
+    #
+    # Tera Ban Jaunga.mp3
+    #
+    # rather than:
+    #
+    # K0V2m5f2d1A.mp3
+    #
     output_template = str(
         output_dir
-        / "%(id)s.%(ext)s"
+        / "%(title)s.%(ext)s"
     )
 
     options = {
 
         # ====================================================
-        # AUDIO FORMAT
+        # BEST AVAILABLE AUDIO
         # ====================================================
 
         "format":
+
             "bestaudio[ext=m4a]/"
             "bestaudio[ext=webm]/"
             "bestaudio/best",
 
+        # ====================================================
+        # TITLE-BASED OUTPUT
+        # ====================================================
+
         "outtmpl":
             output_template,
 
+        # Do not download playlists.
         "noplaylist":
             True,
 
         # ====================================================
-        # DURATION
+        # FILENAMES
         # ====================================================
 
-        # This lets yt-dlp reject an oversized video
-        # BEFORE downloading the media.
+        # Keep Unicode characters, spaces and normal title
+        # characters whenever possible.
+        "restrictfilenames":
+            False,
+
+        # ====================================================
+        # DURATION FILTER
+        # ====================================================
+
         "match_filter":
             duration_filter,
 
@@ -979,9 +1114,6 @@ def build_ydl_options(
         # SPEED
         # ====================================================
 
-        # The old downloader used 2-6 seconds of artificial
-        # request/download sleeping. That made single downloads
-        # noticeably slower.
         "sleep_interval_requests":
             0.5,
 
@@ -991,7 +1123,7 @@ def build_ydl_options(
         "max_sleep_interval":
             0.5,
 
-        # Allow several fragments to download concurrently.
+        # Download multiple fragments concurrently.
         "concurrent_fragment_downloads":
             4,
 
@@ -1000,7 +1132,9 @@ def build_ydl_options(
         # ====================================================
 
         "progress_hooks": [
+
             progress_tracker.hook
+
         ],
 
         # ====================================================
@@ -1108,10 +1242,6 @@ def build_ydl_options(
     # COOKIES
     # ========================================================
 
-    # IMPORTANT:
-    # Use writable /tmp copy instead of Render's
-    # read-only Secret File.
-
     if RUNTIME_COOKIE_FILE.exists():
 
         options[
@@ -1139,14 +1269,18 @@ def classify_download_error(
         message.lower()
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # DURATION
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
+
         "audio is too long"
         in lowered
-        or "video is too long"
+
+        or
+
+        "video is too long"
         in lowered
     ):
 
@@ -1154,16 +1288,23 @@ def classify_download_error(
             message
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # RATE LIMIT
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
+
         "http error 429"
         in lowered
-        or "too many requests"
+
+        or
+
+        "too many requests"
         in lowered
-        or "rate limit"
+
+        or
+
+        "rate limit"
         in lowered
     ):
 
@@ -1172,18 +1313,28 @@ def classify_download_error(
             "rate-limiting this server."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # BOT CHECK
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
+
         "sign in to confirm"
         in lowered
-        or "not a bot"
+
+        or
+
+        "not a bot"
         in lowered
-        or "confirm you're not a bot"
+
+        or
+
+        "confirm you're not a bot"
         in lowered
-        or "confirm you’re not a bot"
+
+        or
+
+        "confirm you’re not a bot"
         in lowered
     ):
 
@@ -1192,16 +1343,23 @@ def classify_download_error(
             "as automated traffic."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # AUTHENTICATION
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
+
         "authentication"
         in lowered
-        or "cookies"
+
+        or
+
+        "cookies"
         in lowered
-        or "sign in"
+
+        or
+
+        "sign in"
         in lowered
     ):
 
@@ -1210,16 +1368,23 @@ def classify_download_error(
             "for this request."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # PRIVATE / UNAVAILABLE
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
+
         "private video"
         in lowered
-        or "video unavailable"
+
+        or
+
+        "video unavailable"
         in lowered
-        or "this video is not available"
+
+        or
+
+        "this video is not available"
         in lowered
     ):
 
@@ -1228,16 +1393,23 @@ def classify_download_error(
             "unavailable or private."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # AGE / MEMBERS
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
+
         "age-restricted"
         in lowered
-        or "confirm your age"
+
+        or
+
+        "confirm your age"
         in lowered
-        or "members-only"
+
+        or
+
+        "members-only"
         in lowered
     ):
 
@@ -1247,14 +1419,18 @@ def classify_download_error(
             "an age restriction."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # FORBIDDEN
-    # --------------------------------------------------------
+    # ========================================================
 
     if (
+
         "http error 403"
         in lowered
-        or "forbidden"
+
+        or
+
+        "forbidden"
         in lowered
     ):
 
@@ -1263,9 +1439,9 @@ def classify_download_error(
             "request."
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # GENERIC
-    # --------------------------------------------------------
+    # ========================================================
 
     return DownloadError(
         message[:700]
@@ -1300,10 +1476,9 @@ def find_audio_file(
         for file in output_dir.iterdir()
 
         if (
+
             file.is_file()
-            and file.name.startswith(
-                f"{video_id}."
-            )
+
             and file.suffix.lower()
             in audio_extensions
         )
@@ -1321,7 +1496,7 @@ def find_audio_file(
 
 
 # ============================================================
-# SHOULD TRY FALLBACK CLIENT?
+# SHOULD TRY FALLBACK?
 # ============================================================
 
 def should_try_fallback(
@@ -1332,26 +1507,35 @@ def should_try_fallback(
         error
     ).lower()
 
-    # Do NOT waste time switching clients when YouTube
-    # is explicitly rate limiting or requesting login.
+    # Do not waste time switching clients when the problem
+    # is authentication, rate limiting or availability.
+
     blocked_patterns = [
 
         "rate-limit",
+
         "rate limit",
+
         "http error 429",
+
         "too many requests",
 
         "sign in",
+
         "not a bot",
+
         "confirm you're not a bot",
+
         "confirm you’re not a bot",
 
         "authentication",
 
         "private video",
+
         "video unavailable",
 
         "age-restricted",
+
         "members-only",
     ]
 
@@ -1361,20 +1545,22 @@ def should_try_fallback(
 
             return False
 
-    # Client fallback is useful for media/client-specific
-    # format and HTTP failures.
     fallback_patterns = [
 
         "http error 403",
+
         "forbidden",
 
         "requested format is not available",
+
         "format is not available",
 
         "unable to download",
+
         "unable to extract",
 
         "no video formats",
+
         "no formats",
     ]
 
@@ -1424,13 +1610,17 @@ def download_with_client(
 
     print(
         "Cookies:",
+
         "enabled"
+
         if RUNTIME_COOKIE_FILE.exists()
+
         else "disabled",
     )
 
     print(
         "Target audio:",
+
         f"{AUDIO_OUTPUT.upper()} "
         f"{AUDIO_QUALITY} kbps",
     )
@@ -1443,20 +1633,23 @@ def download_with_client(
     # SINGLE EXTRACTION + DOWNLOAD
     # ========================================================
     #
-    # IMPORTANT:
+    # Important:
     #
-    # The old downloader did:
+    # We intentionally do NOT do:
     #
-    #     extract_info(download=False)
+    #   extract_info(download=False)
     #
-    # then:
+    # followed by:
     #
-    #     ydl.download()
+    #   download()
     #
-    # which caused yt-dlp to perform extraction work twice.
+    # because that causes unnecessary repeated extraction.
     #
-    # Now we do it once.
+    # Instead:
     #
+    #   extract_info(download=True)
+    #
+    # does extraction and downloading in one yt-dlp run.
 
     try:
 
@@ -1483,7 +1676,7 @@ def download_with_client(
         )
 
     # ========================================================
-    # BASIC METADATA
+    # METADATA
     # ========================================================
 
     video_id = (
@@ -1491,20 +1684,28 @@ def download_with_client(
         or "audio"
     )
 
-    title = (
+    original_title = (
+
         info.get("track")
+
         or info.get("title")
+
         or "Audio"
     )
 
-    title = sanitize_filename(
-        title
+    # The filename is based on the actual YouTube title.
+    filename_title = sanitize_filename(
+        original_title
     )
 
     artist = (
+
         info.get("artist")
+
         or info.get("creator")
+
         or info.get("uploader")
+
         or ""
     )
 
@@ -1546,7 +1747,7 @@ def download_with_client(
     )
 
     # ========================================================
-    # FIND FINAL AUDIO
+    # FIND DOWNLOADED AUDIO
     # ========================================================
 
     audio_path = find_audio_file(
@@ -1556,8 +1757,6 @@ def download_with_client(
 
     if not audio_path:
 
-        # Sometimes yt-dlp may use a different
-        # filename/path after post-processing.
         candidates = [
 
             file
@@ -1565,9 +1764,12 @@ def download_with_client(
             for file in job_dir.iterdir()
 
             if (
+
                 file.is_file()
+
                 and file.suffix.lower()
                 in {
+
                     ".mp3",
                     ".m4a",
                     ".aac",
@@ -1582,7 +1784,9 @@ def download_with_client(
         if candidates:
 
             audio_path = max(
+
                 candidates,
+
                 key=lambda x:
                     x.stat().st_mtime,
             )
@@ -1594,6 +1798,60 @@ def download_with_client(
             "the final audio file could "
             "not be located."
         )
+
+    # ========================================================
+    # FINAL FILENAME
+    # ========================================================
+    #
+    # This is the important change.
+    #
+    # Whatever temporary filename yt-dlp created, we rename
+    # the FINAL processed audio to:
+    #
+    #     YouTube Title.mp3
+    #
+    # This guarantees Telegram receives the human-readable
+    # title as the filename.
+
+    final_extension = (
+        f".{AUDIO_OUTPUT}"
+    )
+
+    final_filename = (
+        f"{filename_title}"
+        f"{final_extension}"
+    )
+
+    final_path = (
+        job_dir
+        / final_filename
+    )
+
+    # Avoid accidentally moving a file onto itself.
+    try:
+
+        if audio_path.resolve() != final_path.resolve():
+
+            if final_path.exists():
+
+                final_path.unlink()
+
+            audio_path.rename(
+                final_path
+            )
+
+            audio_path = final_path
+
+    except Exception as error:
+
+        print(
+            "Filename rename failed:",
+            type(error).__name__,
+            str(error),
+        )
+
+        # If rename fails, keep the original file rather
+        # than breaking an otherwise successful download.
 
     # ========================================================
     # ACTUAL OUTPUT QUALITY
@@ -1620,7 +1878,8 @@ def download_with_client(
     if not quality_text:
 
         quality_text = (
-            f"{AUDIO_OUTPUT.upper()} "
+
+            f"{AUDIO_OUTPUT.upper()} • "
             f"{AUDIO_QUALITY} kbps"
         )
 
@@ -1628,7 +1887,9 @@ def download_with_client(
     # FILE SIZE
     # ========================================================
 
-    file_size = audio_path.stat().st_size
+    file_size = (
+        audio_path.stat().st_size
+    )
 
     if file_size <= 0:
 
@@ -1637,11 +1898,13 @@ def download_with_client(
         )
 
     if (
+
         file_size
         > MAX_FILE_SIZE_BYTES
     ):
 
         raise FileTooLargeError(
+
             "The resulting audio file "
             f"is {format_bytes(file_size)}, "
             "which exceeds the configured "
@@ -1656,6 +1919,7 @@ def download_with_client(
 
         progress_callback(
             {
+
                 "status":
                     "Audio ready",
 
@@ -1670,11 +1934,14 @@ def download_with_client(
 
                 "source_bitrate":
                     source_bitrate,
+
+                "filename":
+                    audio_path.name,
             }
         )
 
     # ========================================================
-    # LOG QUALITY
+    # LOG
     # ========================================================
 
     print(
@@ -1687,21 +1954,29 @@ def download_with_client(
 
     print(
         "Title:",
-        title,
+        original_title,
+    )
+
+    print(
+        "Filename:",
+        audio_path.name,
     )
 
     print(
         "Source:",
-        f"{source_ext} / {source_codec}"
+        f"{source_ext} / {source_codec}",
     )
 
     print(
         "Source bitrate:",
+
         (
             f"{source_bitrate} kbps"
+
             if source_bitrate
+
             else "Unknown"
-        )
+        ),
     )
 
     print(
@@ -1736,7 +2011,7 @@ def download_with_client(
             audio_path.name,
 
         "title":
-            title,
+            original_title,
 
         "artist":
             artist,
@@ -1747,7 +2022,10 @@ def download_with_client(
         "duration":
             duration,
 
-        # Source information
+        # ----------------------------------------------------
+        # SOURCE QUALITY
+        # ----------------------------------------------------
+
         "source_codec":
             source_codec,
 
@@ -1757,7 +2035,10 @@ def download_with_client(
         "source_bitrate":
             source_bitrate,
 
-        # Final output information
+        # ----------------------------------------------------
+        # OUTPUT QUALITY
+        # ----------------------------------------------------
+
         "output_codec":
             output_quality.get(
                 "output_codec"
@@ -1781,6 +2062,10 @@ def download_with_client(
 
         "quality_text":
             quality_text,
+
+        # ----------------------------------------------------
+        # FILE
+        # ----------------------------------------------------
 
         "file_size":
             file_size,
@@ -1815,15 +2100,6 @@ async def download_audio(
     # ========================================================
     # CLIENT ORDER
     # ========================================================
-    #
-    # mweb is primary.
-    #
-    # If the media/client request itself fails, fallback
-    # clients can be attempted.
-    #
-    # If YouTube returns bot/rate-limit/authentication errors,
-    # we DON'T waste 30-60 seconds trying every client.
-    #
 
     clients = [
 
@@ -1842,16 +2118,11 @@ async def download_audio(
     # CALLBACK BRIDGE
     # ========================================================
     #
-    # yt-dlp runs inside a worker thread.
+    # yt-dlp executes progress hooks synchronously.
     #
-    # Your bot currently passes an async callback:
+    # Telegram callbacks are asynchronous.
     #
-    #     lambda progress:
-    #         progress_callback(...)
-    #
-    # This bridge safely schedules that coroutine back onto
-    # the Telegram asyncio event loop.
-    #
+    # This safely bridges the two.
 
     def thread_safe_callback(
         progress,
@@ -1872,7 +2143,9 @@ async def download_audio(
             ):
 
                 asyncio.run_coroutine_threadsafe(
+
                     result,
+
                     loop,
                 )
 
@@ -1910,11 +2183,17 @@ async def download_audio(
 
                 thread_safe_callback(
                     {
+
                         "status":
+
                             (
+
                                 "Connecting to YouTube"
+
                                 if index == 0
+
                                 else
+
                                 f"Retrying with {client}"
                             ),
 
@@ -1935,11 +2214,16 @@ async def download_audio(
                         None,
 
                         lambda: (
+
                             download_with_client(
+
                                 url=url,
+
                                 job_dir=job_dir,
+
                                 progress_callback=
                                     thread_safe_callback,
+
                                 player_client=
                                     client,
                             )
@@ -1950,20 +2234,26 @@ async def download_audio(
                 )
 
                 print(
-                    f"Download successful "
+                    "Download successful "
                     f"using client: {client}"
                 )
 
                 return result
 
             except (
+
                 FileTooLargeError,
+
                 DurationTooLongError,
+
                 VideoUnavailableError,
+
             ):
 
                 shutil.rmtree(
+
                     job_dir,
+
                     ignore_errors=True,
                 )
 
@@ -1972,17 +2262,21 @@ async def download_audio(
             except DownloadError as error:
 
                 print(
+
                     f"Client {client} failed:",
+
                     str(error),
                 )
 
                 shutil.rmtree(
+
                     job_dir,
+
                     ignore_errors=True,
                 )
 
                 # ------------------------------------------------
-                # STOP IMMEDIATELY FOR NON-FALLBACK ERRORS
+                # DON'T WASTE TIME ON BLOCKING ERRORS
                 # ------------------------------------------------
 
                 if not should_try_fallback(
@@ -1992,7 +2286,7 @@ async def download_audio(
                     raise
 
                 # ------------------------------------------------
-                # NO NEED TO WAIT AFTER LAST CLIENT
+                # LAST CLIENT
                 # ------------------------------------------------
 
                 if index >= (
@@ -2019,7 +2313,9 @@ async def download_audio(
                 )
 
                 shutil.rmtree(
+
                     job_dir,
+
                     ignore_errors=True,
                 )
 
@@ -2030,14 +2326,19 @@ async def download_audio(
             except Exception as error:
 
                 print(
+
                     f"Unexpected error with "
                     f"{client}:",
+
                     type(error).__name__,
+
                     str(error),
                 )
 
                 shutil.rmtree(
+
                     job_dir,
+
                     ignore_errors=True,
                 )
 
@@ -2081,7 +2382,9 @@ def cleanup_job_directory(
         if path.exists():
 
             shutil.rmtree(
+
                 path,
+
                 ignore_errors=True,
             )
 
