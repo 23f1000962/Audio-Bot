@@ -1,4 +1,3 @@
-```python
 """
 Spotify integration for Audio Bot.
 
@@ -273,16 +272,6 @@ def build_spotify_resource_url(
 def is_spotify_search(
     text: str,
 ) -> bool:
-    """
-    Supported:
-
-        Apna Bana Le spotify
-        Apna Bana Le - spotify
-        spotify Apna Bana Le
-        spotify - Apna Bana Le
-
-    Direct Spotify URLs are also recognized.
-    """
 
     if not text:
         return False
@@ -292,13 +281,11 @@ def is_spotify_search(
     if not value:
         return False
 
-    # Direct Spotify URL.
     if is_spotify_url(
         value
     ):
         return True
 
-    # song spotify
     if re.search(
         r"(?:^|\s)spotify\s*$",
         value,
@@ -306,7 +293,6 @@ def is_spotify_search(
     ):
         return True
 
-    # song - spotify
     if re.search(
         r"\s*-\s*spotify\s*$",
         value,
@@ -314,7 +300,6 @@ def is_spotify_search(
     ):
         return True
 
-    # spotify song
     if re.match(
         r"^\s*spotify(?:\s*-\s*|\s+).+",
         value,
@@ -328,30 +313,12 @@ def is_spotify_search(
 def clean_spotify_query(
     text: str,
 ) -> str:
-    """
-    Remove the Spotify trigger.
-
-    Examples:
-
-        Apna Bana Le spotify
-        -> Apna Bana Le
-
-        Apna Bana Le - spotify
-        -> Apna Bana Le
-
-        spotify Apna Bana Le
-        -> Apna Bana Le
-
-        spotify - Apna Bana Le
-        -> Apna Bana Le
-    """
 
     if not text:
         return ""
 
     query = text.strip()
 
-    # Direct URL remains untouched.
     if is_spotify_url(
         query
     ):
@@ -396,10 +363,6 @@ def clean_spotify_query(
 def extract_artists(
     item: Any,
 ) -> list[str]:
-    """
-    Extract artist names from multiple possible
-    RapidAPI/Spotify response structures.
-    """
 
     if not isinstance(
         item,
@@ -415,10 +378,6 @@ def extract_artists(
         item.get("artistName"),
         item.get("artist_name"),
     ]
-
-    # --------------------------------------------------------
-    # Direct artists
-    # --------------------------------------------------------
 
     for artists in candidates:
 
@@ -522,10 +481,6 @@ def extract_artists(
                         name
                     )
 
-    # --------------------------------------------------------
-    # Nested Spotify-style artist data
-    # --------------------------------------------------------
-
     nested_candidates = [
         item.get("artist"),
         item.get("artists"),
@@ -565,10 +520,6 @@ def extract_artists(
             result.append(
                 name
             )
-
-    # --------------------------------------------------------
-    # Remove duplicate artist names
-    # --------------------------------------------------------
 
     unique: list[str] = []
     seen: set[str] = set()
@@ -1376,10 +1327,6 @@ def search_tracks(
             "Unable to connect to the Spotify Search API."
         ) from exc
 
-    # ========================================================
-    # HTTP STATUS
-    # ========================================================
-
     if response.status_code == 429:
 
         retry_after = response.headers.get(
@@ -1427,10 +1374,6 @@ def search_tracks(
             f"{response.status_code}: {body}"
         )
 
-    # ========================================================
-    # JSON
-    # ========================================================
-
     try:
 
         payload = response.json()
@@ -1440,10 +1383,6 @@ def search_tracks(
         raise RuntimeError(
             "Spotify API returned invalid JSON."
         ) from exc
-
-    # ========================================================
-    # API SUCCESS FLAG
-    # ========================================================
 
     if isinstance(
         payload,
@@ -1475,10 +1414,6 @@ def search_tracks(
                     "Spotify API request failed.",
                 )
             )
-
-    # ========================================================
-    # EXTRACT RESULTS
-    # ========================================================
 
     items = find_track_items(
         payload
@@ -1686,23 +1621,6 @@ def search_spotify(
     user_text: str,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """
-    Process a Spotify request.
-
-    Text search:
-
-        Apna Bana Le spotify
-
-    Direct URL:
-
-        https://open.spotify.com/track/...
-
-        https://open.spotify.com/playlist/...
-
-    The function returns the resource type and ID
-    for direct Spotify URLs so bot.py can handle
-    the appropriate resource.
-    """
 
     if not is_spotify_search(
         user_text
@@ -1722,10 +1640,6 @@ def search_spotify(
     query = clean_spotify_query(
         user_text
     )
-
-    # ========================================================
-    # DIRECT SPOTIFY URL
-    # ========================================================
 
     if is_spotify_url(
         query
@@ -1762,10 +1676,6 @@ def search_spotify(
             "results": [],
         }
 
-    # ========================================================
-    # EMPTY QUERY
-    # ========================================================
-
     if not query:
 
         return {
@@ -1776,10 +1686,6 @@ def search_spotify(
             "query": "",
             "results": [],
         }
-
-    # ========================================================
-    # TEXT SEARCH
-    # ========================================================
 
     results = search_tracks(
         query,
@@ -1979,4 +1885,3 @@ def friendly_error(
         "❌ <b>Spotify search failed.</b>\n\n"
         f"<code>{escape_html(message[:400])}</code>"
     )
-```
