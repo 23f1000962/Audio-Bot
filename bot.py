@@ -4,11 +4,8 @@ import json
 import asyncio
 import threading
 import shutil
-import urllib.parse
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-import yt_dlp
 
 from telegram import (
     Update,
@@ -29,6 +26,9 @@ from telegram.ext import (
 from downloader import (
     download_audio,
     DownloadError,
+    ProgressTracker,
+    build_ydl_options,
+    prepare_cookie_file,
 )
 
 from spotify import (
@@ -77,14 +77,13 @@ DOWNLOAD_SEMAPHORE = asyncio.Semaphore(
     MAX_CONCURRENT_DOWNLOADS
 )
 
-# Number of Spotify search results displayed.
 SPOTIFY_RESULT_LIMIT = max(
     1,
     min(
         10,
         int(
             os.getenv(
-                "SPOTIFY_RESULT_LIMIT",
+                "SPOTIFY_SEARCH_LIMIT",
                 "8",
             )
         ),
@@ -196,7 +195,9 @@ async def delete_message(
         pass
 
 
-def cleanup_job_directory(job_dir):
+def cleanup_job_directory(
+    job_dir,
+):
     if not job_dir:
         return
 
@@ -225,20 +226,26 @@ def cleanup_job_directory(job_dir):
 # ============================================================
 
 SPOTIFY_URL_REGEX = re.compile(
-    r"https?://open\.spotify\.com/"
+    r"https?://(?:open\.)?spotify\.com/"
     r"(?:intl-[^/]+/)?"
-    r"track/[A-Za-z0-9]+",
+    r"(?:track|album|playlist|artist)/"
+    r"[A-Za-z0-9]+",
     re.IGNORECASE,
 )
 
 
-def looks_like_spotify_request(text: str) -> bool:
+def looks_like_spotify_request(
+    text: str,
+) -> bool:
+
     if not text:
         return False
 
     text = text.strip()
 
-    if SPOTIFY_URL_REGEX.search(text):
+    if SPOTIFY_URL_REGEX.search(
+        text
+    ):
         return True
 
     lowered = text.lower()
@@ -263,25 +270,13 @@ def looks_like_spotify_request(text: str) -> bool:
 def clean_spotify_query_for_display(
     text: str,
 ) -> str:
+
     if not text:
         return ""
 
     query = text.strip()
 
-    query = re.sub(
-        r"\s*-\s*spotify\s*$",
-        "",
-        query,
-        flags=re.IGNORECASE,
-    )
-
-    query = re.sub(
-        r"\s+spotify\s*$",
-        "",
-        query,
-        flags=re.IGNORECASE,
-    )
-
+    # spotify - song
     query = re.sub(
         r"^\s*spotify\s*-\s*",
         "",
@@ -289,8 +284,25 @@ def clean_spotify_query_for_display(
         flags=re.IGNORECASE,
     )
 
+    # spotify song
     query = re.sub(
         r"^\s*spotify\s+",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+
+    # song - spotify
+    query = re.sub(
+        r"\s*-\s*spotify\s*$",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+
+    # song spotify
+    query = re.sub(
+        r"\s+spotify\s*$",
         "",
         query,
         flags=re.IGNORECASE,
@@ -299,66 +311,13 @@ def clean_spotify_query_for_display(
     return query.strip()
 
 
-def spotify_result_title(track):
-    title = (
-        track.get("title")
-        or "Unknown Track"
-    )
-
-    artist = (
-        track.get("artist")
-        or "Unknown Artist"
-    )
-
-    return (
-        f"{str(title)[:55]} — "
-        f"{str(artist)[:35]}"
-    )
-
-
-def spotify_result_description(track):
-    title = (
-        track.get("title")
-        or "Unknown Track"
-    )
-
-    artist = (
-        track.get("artist")
-        or "Unknown Artist"
-    )
-
-    album = (
-        track.get("album")
-        or ""
-    )
-
-    duration = format_duration(
-        track.get("duration")
-    )
-
-    parts = [
-        f"🎵 {str(title)[:70]}",
-        f"👤 {str(artist)[:70]}",
-    ]
-
-    if album:
-        parts.append(
-            f"💿 {str(album)[:70]}"
-        )
-
-    if duration:
-        parts.append(
-            f"⏱️ {duration}"
-        )
-
-    return "\n".join(parts)
-
-
 # ============================================================
-# YOUTUBE SEARCH FOR SPOTIFY SELECTION
+# SPOTIFY → YOUTUBE RESOLUTION
 # ============================================================
 
-def build_youtube_search_query(track):
+def build_youtube_search_query(
+    track,
+):
     title = (
         track.get("title")
         or ""
@@ -375,87 +334,149 @@ def build_youtube_search_query(track):
     return title
 
 
-def resolve_youtube_search(query: str):
+def resolve_youtube_search(
+    query: str,
+):
     """
-    Resolve a text query to the first YouTube video URL.
+    Resolve a Spotify-selected track to a YouTube URL.
 
-    The actual audio download is still performed by
-    downloader.py so the existing BGUTIL/cookie/client
-    configuration remains centralized there.
+    IMPORTANT:
+    This uses the same yt-dlp configuration as
+    downloader.py, including:
+
+        - YouTube cookies
+        - BGUTIL PO-token provider
+        - Deno
+        - YouTube clients
+        - existing retry/client strategy
+
+    No media is downloaded here.
     """
 
     if not query:
         raise DownloadError(
-            "Spotify result did not contain a searchable title."
+            "Spotify result did not contain "
+            "a searchable title."
         )
 
-    search_query = f"ytsearch1:{query}"
+    # Make sure the writable cookie copy exists.
+    prepare_cookie_file()
 
-    options = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": True,
-        "noplaylist": True,
-    }
+    clients = [
+        "mweb",
+        "web_safari",
+        "android_vr",
+        "web_embedded",
+    ]
 
-    try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(
-                search_query,
-                download=False,
-            )
+    search_query = (
+        f"ytsearch1:{query}"
+    )
 
-        if not info:
-            raise DownloadError(
-                "No YouTube result was found."
-            )
+    last_error = None
 
-        entries = info.get(
-            "entries"
-        ) or []
+    for client in clients:
 
-        if not entries:
-            raise DownloadError(
-                "No YouTube result was found."
-            )
+        tracker = ProgressTracker()
 
-        entry = entries[0]
-
-        video_url = (
-            entry.get("webpage_url")
-            or entry.get("original_url")
+        # Reuse the exact downloader configuration.
+        options = build_ydl_options(
+            output_dir=DOWNLOAD_DIR,
+            progress_tracker=tracker,
+            player_client=client,
         )
 
-        if not video_url:
-            video_id = entry.get("id")
+        # Search only. Do not download.
+        options.update(
+            {
+                "skip_download": True,
+                "extract_flat": True,
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+            }
+        )
 
-            if video_id:
-                video_url = (
-                    f"https://www.youtube.com/watch?v="
-                    f"{video_id}"
+        print(
+            "Spotify → YouTube search:",
+            query,
+            "| client:",
+            client,
+        )
+
+        try:
+
+            # Import yt_dlp only here so the main bot
+            # does not maintain a second configuration.
+            import yt_dlp
+
+            with yt_dlp.YoutubeDL(
+                options
+            ) as ydl:
+
+                info = ydl.extract_info(
+                    search_query,
+                    download=False,
                 )
 
-        if not video_url:
-            raise DownloadError(
-                "Could not resolve the YouTube result."
+            if not info:
+                continue
+
+            entries = (
+                info.get("entries")
+                or []
             )
 
-        return video_url
+            if not entries:
+                continue
 
-    except DownloadError:
-        raise
+            entry = entries[0]
 
-    except Exception as error:
+            video_url = (
+                entry.get("webpage_url")
+                or entry.get("original_url")
+            )
+
+            if not video_url:
+
+                video_id = entry.get(
+                    "id"
+                )
+
+                if video_id:
+                    video_url = (
+                        "https://www.youtube.com/watch?v="
+                        f"{video_id}"
+                    )
+
+            if video_url:
+
+                print(
+                    "Spotify → YouTube resolved:",
+                    video_url,
+                )
+
+                return video_url
+
+        except Exception as error:
+
+            last_error = error
+
+            print(
+                "YouTube search client failed:",
+                client,
+                type(error).__name__,
+                str(error),
+            )
+
+    if last_error:
         print(
-            "YouTube search error:",
-            type(error).__name__,
-            str(error),
+            "All Spotify → YouTube search clients failed."
         )
 
-        raise DownloadError(
-            "Could not find the song on YouTube."
-        )
+    raise DownloadError(
+        "Could not find the selected song on YouTube."
+    )
 
 
 # ============================================================
@@ -466,6 +487,7 @@ async def start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not update.message:
         return
 
@@ -490,7 +512,7 @@ async def start(
         "`spotify Apna Bana Le`\n"
         "`Apna Bana Le - spotify`\n\n"
 
-        "📎 *Just send a link or song name to begin.*\n\n"
+        "📎 *Send a link or song name to begin.*\n\n"
 
         f"🤖 Audio Bot v{BOT_VERSION}",
 
@@ -502,6 +524,7 @@ async def help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not update.message:
         return
 
@@ -514,9 +537,6 @@ async def help_command(
         "*YouTube Music*\n"
         "`https://music.youtube.com/watch?v=...`\n\n"
 
-        "*Short URL*\n"
-        "`https://youtu.be/...`\n\n"
-
         "*YouTube Shorts*\n"
         "`https://youtube.com/shorts/...`\n\n"
 
@@ -525,14 +545,15 @@ async def help_command(
         "`spotify Apna Bana Le`\n"
         "`Apna Bana Le - spotify`\n\n"
 
-        "The bot searches Spotify for the requested "
-        "song and lets you choose from the matching "
-        "results. The selected song is then located "
-        "on YouTube and processed using the normal "
-        "audio downloader.\n\n"
+        "Spotify search returns multiple matching "
+        "tracks. Select the one you want and the bot "
+        "will locate that track on YouTube before "
+        "processing it through the normal downloader.\n\n"
 
-        "The bot converts audio to MP3 using "
-        "yt-dlp + FFmpeg.\n\n"
+        "🎧 Output: MP3\n"
+        "🖼 Artwork: Enabled\n"
+        "🏷 Metadata: Enabled\n"
+        "🧹 Automatic cleanup\n\n"
 
         "⚠️ Only download content you have permission "
         "to download.\n\n"
@@ -547,6 +568,7 @@ async def version_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not update.message:
         return
 
@@ -560,7 +582,7 @@ async def version_command(
         "🖼 Artwork: Enabled\n"
         "🏷 Metadata: Enabled\n"
         "🧹 Cleanup: Automatic\n"
-        "🔎 Spotify: RapidAPI search\n"
+        "🔎 Spotify: RapidAPI search\n\n"
 
         f"⚡ Concurrent downloads: "
         f"{MAX_CONCURRENT_DOWNLOADS}",
@@ -573,6 +595,7 @@ async def greeting(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not update.message:
         return
 
@@ -592,7 +615,9 @@ async def progress_callback(
     message,
     progress,
 ):
+
     try:
+
         if not progress:
             return
 
@@ -606,8 +631,11 @@ async def progress_callback(
         )
 
         if percent is not None:
+
             try:
-                percent = float(percent)
+                percent = float(
+                    percent
+                )
             except (
                 TypeError,
                 ValueError,
@@ -639,6 +667,7 @@ async def progress_callback(
             )
 
         else:
+
             text = (
                 f"⏳ *{status}...*\n\n"
                 f"🤖 v{BOT_VERSION}"
@@ -654,13 +683,14 @@ async def progress_callback(
 
 
 # ============================================================
-# SPOTIFY SEARCH HANDLER
+# SPOTIFY SEARCH
 # ============================================================
 
 async def handle_spotify_search(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not update.message:
         return
 
@@ -673,22 +703,45 @@ async def handle_spotify_search(
         original_text
     )
 
+    # Direct Spotify URLs are recognized by spotify.py,
+    # but the currently configured RapidAPI endpoint is
+    # a text search endpoint. Do not pretend a URL can
+    # be resolved through /search.
+    if SPOTIFY_URL_REGEX.search(
+        original_text
+    ):
+
+        await update.message.reply_text(
+            "ℹ️ *Spotify track URLs aren't available "
+            "in this version yet.*\n\n"
+            "Use Spotify text search instead:\n"
+            "`Apna Bana Le spotify`",
+            parse_mode="Markdown",
+        )
+
+        return
+
     if not query:
+
         await update.message.reply_text(
             "❌ *Spotify search query is empty.*\n\n"
             "Example:\n"
             "`Apna Bana Le spotify`",
             parse_mode="Markdown",
         )
+
         return
 
-    status_message = await update.message.reply_text(
-        "🔎 *Searching Spotify...*\n\n"
-        f"🎵 `{query[:100]}`",
-        parse_mode="Markdown",
+    status_message = (
+        await update.message.reply_text(
+            "🔎 *Searching Spotify...*\n\n"
+            f"🎵 `{query[:100]}`",
+            parse_mode="Markdown",
+        )
     )
 
     try:
+
         result = await asyncio.to_thread(
             search_spotify,
             original_text,
@@ -697,26 +750,35 @@ async def handle_spotify_search(
 
         results = (
             result.get("results")
-            if isinstance(result, dict)
+            if isinstance(
+                result,
+                dict,
+            )
             else None
         )
 
         if not results:
+
             await safe_edit(
                 status_message,
                 "❌ *No Spotify results found.*\n\n"
-                "Try a different song title or artist.",
+                "Try another song title or include "
+                "the artist name.",
             )
+
             return
 
-        # Store the results per user.
+        # Store search results for this user.
         context.user_data[
             "spotify_results"
         ] = results
 
         keyboard = []
 
-        for index, track in enumerate(results):
+        for index, track in enumerate(
+            results
+        ):
+
             title = (
                 track.get("title")
                 or "Unknown"
@@ -729,8 +791,8 @@ async def handle_spotify_search(
 
             button_text = (
                 f"{index + 1}. "
-                f"{str(title)[:45]} — "
-                f"{str(artist)[:25]}"
+                f"{str(title)[:42]} — "
+                f"{str(artist)[:22]}"
             )
 
             keyboard.append(
@@ -748,7 +810,9 @@ async def handle_spotify_search(
             [
                 InlineKeyboardButton(
                     "❌ Cancel",
-                    callback_data="spotify_cancel",
+                    callback_data=(
+                        "spotify_cancel"
+                    ),
                 )
             ]
         )
@@ -762,13 +826,16 @@ async def handle_spotify_search(
 
         await update.message.reply_text(
             "👇 *Choose a track:*",
-            reply_markup=InlineKeyboardMarkup(
-                keyboard
+            reply_markup=(
+                InlineKeyboardMarkup(
+                    keyboard
+                )
             ),
             parse_mode="Markdown",
         )
 
     except Exception as error:
+
         print(
             "Spotify search error:",
             type(error).__name__,
@@ -777,8 +844,9 @@ async def handle_spotify_search(
 
         await safe_edit(
             status_message,
-            "❌ *Spotify search failed*\n\n"
-            "Please check the search query and try again.",
+            "❌ *Spotify search failed.*\n\n"
+            "Please try again or use a different "
+            "song title.",
         )
 
 
@@ -790,6 +858,7 @@ async def spotify_callback(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     query = update.callback_query
 
     if not query:
@@ -798,6 +867,7 @@ async def spotify_callback(
     await query.answer()
 
     if query.data == "spotify_cancel":
+
         try:
             await query.edit_message_text(
                 "❌ Spotify selection cancelled."
@@ -818,20 +888,24 @@ async def spotify_callback(
         return
 
     try:
+
         index = int(
             query.data.split(
                 ":",
                 1,
             )[1]
         )
+
     except (
         ValueError,
         IndexError,
     ):
+
         await query.answer(
             "Invalid selection.",
             show_alert=True,
         )
+
         return
 
     results = context.user_data.get(
@@ -844,10 +918,12 @@ async def spotify_callback(
         or index < 0
         or index >= len(results)
     ):
+
         await query.answer(
             "This search has expired. Search again.",
             show_alert=True,
         )
+
         return
 
     track = results[index]
@@ -867,6 +943,7 @@ async def spotify_callback(
     )
 
     try:
+
         await query.edit_message_text(
             "🎵 *Selected track*\n\n"
             f"🎧 {str(title)[:100]}\n"
@@ -880,11 +957,6 @@ async def spotify_callback(
             search_query,
         )
 
-        print(
-            "Spotify selection resolved to:",
-            youtube_url,
-        )
-
         await process_audio_download(
             update=update,
             context=context,
@@ -894,6 +966,7 @@ async def spotify_callback(
         )
 
     except DownloadError as error:
+
         print(
             "Spotify selection DownloadError:",
             str(error),
@@ -906,6 +979,7 @@ async def spotify_callback(
         )
 
     except Exception as error:
+
         print(
             "Spotify callback error:",
             type(error).__name__,
@@ -919,6 +993,7 @@ async def spotify_callback(
         )
 
     finally:
+
         context.user_data.pop(
             "spotify_results",
             None,
@@ -936,17 +1011,20 @@ async def process_audio_download(
     source_message,
     spotify_track=None,
 ):
+
     status_message = source_message
 
     audio_path = None
     job_dir = None
 
     try:
+
         # ====================================================
         # QUEUE
         # ====================================================
 
         if DOWNLOAD_SEMAPHORE.locked():
+
             await safe_edit(
                 status_message,
                 "⏳ *You're in the queue...*\n\n"
@@ -966,14 +1044,17 @@ async def process_audio_download(
             result = await download_audio(
                 url=original_url,
                 output_dir=DOWNLOAD_DIR,
-                progress_callback=lambda progress:
+                progress_callback=(
+                    lambda progress:
                     progress_callback(
                         status_message,
                         progress,
-                    ),
+                    )
+                ),
             )
 
         if not result:
+
             raise DownloadError(
                 "Downloader returned no result."
             )
@@ -990,11 +1071,13 @@ async def process_audio_download(
         )
 
         if not audio_path.exists():
+
             raise DownloadError(
                 "Downloaded audio file was not found."
             )
 
         if audio_path.stat().st_size == 0:
+
             raise DownloadError(
                 "Downloaded audio file is empty."
             )
@@ -1031,13 +1114,14 @@ async def process_audio_download(
             or "MP3 • 192 kbps"
         )
 
-        # If this was selected from Spotify and
-        # downloader metadata is missing, preserve
-        # the Spotify metadata as a fallback.
         if spotify_track:
+
             if not artist:
+
                 artist = (
-                    spotify_track.get("artist")
+                    spotify_track.get(
+                        "artist"
+                    )
                     or ""
                 )
 
@@ -1058,6 +1142,7 @@ async def process_audio_download(
         ]
 
         if artist:
+
             caption_parts.append(
                 f"👤 {str(artist)[:150]}"
             )
@@ -1067,6 +1152,7 @@ async def process_audio_download(
         )
 
         if formatted_duration:
+
             caption_parts.append(
                 f"⏱️ {formatted_duration}"
             )
@@ -1076,6 +1162,7 @@ async def process_audio_download(
         )
 
         if spotify_track:
+
             caption_parts.append(
                 "🔎 Source: Spotify search"
             )
@@ -1139,12 +1226,14 @@ async def process_audio_download(
         lowered = error_text.lower()
 
         if "private" in lowered:
+
             message = (
                 "🔒 *Private video*\n\n"
                 "This video is private or unavailable."
             )
 
         elif "age" in lowered:
+
             message = (
                 "🔞 *Age-restricted video*\n\n"
                 "This video requires access that the bot "
@@ -1156,6 +1245,7 @@ async def process_audio_download(
             or "rate limit" in lowered
             or "429" in lowered
         ):
+
             message = (
                 "⏳ *YouTube is temporarily busy*\n\n"
                 "YouTube is rate-limiting this server "
@@ -1167,6 +1257,7 @@ async def process_audio_download(
             "sign in" in lowered
             or "bot" in lowered
         ):
+
             message = (
                 "🛡️ *YouTube verification required*\n\n"
                 "YouTube is currently requiring additional "
@@ -1175,12 +1266,14 @@ async def process_audio_download(
             )
 
         elif "403" in lowered:
+
             message = (
                 "⚠️ *YouTube temporarily rejected the request.*\n\n"
                 "Please try again in a few minutes."
             )
 
         elif "too large" in lowered:
+
             message = (
                 "📦 *File too large*\n\n"
                 "The resulting audio file exceeds "
@@ -1188,12 +1281,14 @@ async def process_audio_download(
             )
 
         elif "duration" in lowered:
+
             message = (
                 "⏱️ *Video is too long*\n\n"
                 "The maximum allowed duration has been exceeded."
             )
 
         else:
+
             message = (
                 "❌ *Download failed*\n\n"
                 "The video may be unavailable, restricted, "
@@ -1236,16 +1331,20 @@ async def process_audio_download(
     finally:
 
         if job_dir:
+
             cleanup_job_directory(
                 job_dir
             )
 
         elif audio_path:
+
             try:
+
                 if audio_path.exists():
                     audio_path.unlink()
 
             except Exception as error:
+
                 print(
                     "Fallback cleanup error:",
                     error,
@@ -1253,13 +1352,14 @@ async def process_audio_download(
 
 
 # ============================================================
-# HANDLE NORMAL YOUTUBE LINK
+# NORMAL YOUTUBE LINK
 # ============================================================
 
 async def handle_youtube_link(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not update.message:
         return
 
@@ -1268,10 +1368,12 @@ async def handle_youtube_link(
         or ""
     ).strip()
 
-    status_message = await update.message.reply_text(
-        "🔍 *Analyzing YouTube link...*\n\n"
-        "Please wait...",
-        parse_mode="Markdown",
+    status_message = (
+        await update.message.reply_text(
+            "🔍 *Analyzing YouTube link...*\n\n"
+            "Please wait...",
+            parse_mode="Markdown",
+        )
     )
 
     await process_audio_download(
@@ -1291,6 +1393,7 @@ async def handle_link(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
+
     if not update.message:
         return
 
@@ -1307,25 +1410,29 @@ async def handle_link(
     # --------------------------------------------------------
 
     if is_youtube_url(text):
+
         await handle_youtube_link(
             update,
             context,
         )
+
         return
 
     # --------------------------------------------------------
-    # Spotify search
+    # Spotify
     # --------------------------------------------------------
 
     if looks_like_spotify_request(text):
+
         await handle_spotify_search(
             update,
             context,
         )
+
         return
 
     # --------------------------------------------------------
-    # Everything else
+    # Unknown text
     # --------------------------------------------------------
 
     await update.message.reply_text(
@@ -1460,7 +1567,7 @@ def cleanup_download_directory():
 
 
 # ============================================================
-# BOT COMMANDS
+# TELEGRAM COMMANDS
 # ============================================================
 
 async def post_init(
@@ -1473,12 +1580,10 @@ async def post_init(
                 "start",
                 "Start the bot",
             ),
-
             BotCommand(
                 "help",
                 "How to use the bot",
             ),
-
             BotCommand(
                 "version",
                 "Show bot version",
@@ -1492,7 +1597,7 @@ async def post_init(
 
 
 # ============================================================
-# TELEGRAM ERROR HANDLER
+# ERROR HANDLER
 # ============================================================
 
 async def error_handler(
@@ -1516,6 +1621,7 @@ async def error_handler(
 def main():
 
     if not BOT_TOKEN:
+
         raise RuntimeError(
             "BOT_TOKEN environment variable is missing."
         )
@@ -1558,13 +1664,16 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Spotify result buttons
+    # Spotify callbacks
     # --------------------------------------------------------
 
     application.add_handler(
         CallbackQueryHandler(
             spotify_callback,
-            pattern=r"^spotify_(?:select:\d+|cancel)$",
+            pattern=(
+                r"^spotify_"
+                r"(?:select:\d+|cancel)$"
+            ),
         )
     )
 
@@ -1603,7 +1712,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # Startup logs
+    # Startup
     # --------------------------------------------------------
 
     print(
@@ -1627,7 +1736,8 @@ def main():
     )
 
     print(
-        "🔄 Clients: mweb → web_safari → "
+        "🔄 YouTube clients: "
+        "mweb → web_safari → "
         "android_vr → web_embedded"
     )
 
