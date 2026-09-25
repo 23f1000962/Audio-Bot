@@ -1,3 +1,4 @@
+```python
 """
 Spotify integration for Audio Bot.
 
@@ -443,23 +444,26 @@ def extract_artists(
                     dict,
                 ):
 
+                    profile = artist.get(
+                        "profile"
+                    )
+
+                    profile_name = ""
+
+                    if isinstance(
+                        profile,
+                        dict,
+                    ):
+
+                        profile_name = clean_text(
+                            profile.get("name")
+                        )
+
                     name = clean_text(
                         artist.get("name")
                         or artist.get("title")
                         or artist.get("artist")
-                        or (
-                            artist.get(
-                                "profile",
-                                {},
-                            ).get("name")
-                            if isinstance(
-                                artist.get(
-                                    "profile"
-                                ),
-                                dict,
-                            )
-                            else ""
-                        )
+                        or profile_name
                     )
 
                 else:
@@ -475,10 +479,26 @@ def extract_artists(
             dict,
         ):
 
+            profile = artists.get(
+                "profile"
+            )
+
+            profile_name = ""
+
+            if isinstance(
+                profile,
+                dict,
+            ):
+
+                profile_name = clean_text(
+                    profile.get("name")
+                )
+
             name = clean_text(
                 artists.get("name")
                 or artists.get("title")
                 or artists.get("artist")
+                or profile_name
             )
 
             if name:
@@ -490,10 +510,6 @@ def extract_artists(
             artists,
             str,
         ):
-
-            # Some APIs return:
-            #
-            # "Arijit Singh, Sachin-Jigar"
 
             for artist in artists.split(
                 ","
@@ -593,7 +609,6 @@ def extract_artist(
             artists
         )
 
-    # Additional fallback fields.
     for key in (
         "artist",
         "artistName",
@@ -609,7 +624,6 @@ def extract_artist(
         if value:
             return value
 
-    # Nested album artist.
     album = item.get(
         "album"
     )
@@ -645,7 +659,6 @@ def extract_cover(
     ):
         return None
 
-    # Direct fields.
     for key in (
         "cover",
         "thumbnail",
@@ -667,7 +680,6 @@ def extract_cover(
 
             return value.strip()
 
-    # Images list.
     images = item.get(
         "images"
     )
@@ -699,7 +711,6 @@ def extract_cover(
             if url:
                 return url
 
-    # Spotify coverArt structure.
     cover_art = item.get(
         "coverArt"
     )
@@ -735,7 +746,6 @@ def extract_cover(
                 if url:
                     return url
 
-    # Nested album.
     album = item.get(
         "album"
     )
@@ -809,7 +819,6 @@ def format_duration(
 
         return ""
 
-    # Milliseconds.
     if number > 10000:
 
         total_seconds = int(
@@ -857,7 +866,6 @@ def extract_title(
     item: dict[str, Any],
 ) -> str:
 
-    # Standard fields.
     for key in (
         "title",
         "name",
@@ -872,7 +880,6 @@ def extract_title(
         if value:
             return value
 
-    # Nested Spotify item.
     nested_item = item.get(
         "item"
     )
@@ -889,7 +896,6 @@ def extract_title(
         if title:
             return title
 
-    # Nested itemV2.
     item_v2 = item.get(
         "itemV2"
     )
@@ -974,7 +980,6 @@ def extract_track_id(
         if value:
             return value
 
-    # Spotify URI.
     uri = clean_text(
         item.get("uri")
     )
@@ -988,7 +993,6 @@ def extract_track_id(
             1,
         )[1].strip()
 
-    # Nested item.
     nested = item.get(
         "item"
     )
@@ -1106,15 +1110,6 @@ def normalize_track(
 def deduplicate_tracks(
     tracks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """
-    Remove duplicate Spotify results.
-
-    Primary key:
-        Spotify track ID
-
-    Fallback:
-        normalized title + artist + duration
-    """
 
     unique: list[
         dict[str, Any]
@@ -1195,10 +1190,6 @@ def deduplicate_tracks(
 def find_track_items(
     payload: Any,
 ) -> list[dict[str, Any]]:
-    """
-    Handle several response structures used by
-    RapidAPI providers.
-    """
 
     if not isinstance(
         payload,
@@ -1221,10 +1212,6 @@ def find_track_items(
         ):
             continue
 
-        # ----------------------------------------------------
-        # tracks: [...]
-        # ----------------------------------------------------
-
         tracks = candidate.get(
             "tracks"
         )
@@ -1242,10 +1229,6 @@ def find_track_items(
                     dict,
                 )
             ]
-
-        # ----------------------------------------------------
-        # tracks: {items: [...]}
-        # ----------------------------------------------------
 
         if isinstance(
             tracks,
@@ -1270,10 +1253,6 @@ def find_track_items(
                     )
                 ]
 
-        # ----------------------------------------------------
-        # items: [...]
-        # ----------------------------------------------------
-
         items = candidate.get(
             "items"
         )
@@ -1294,10 +1273,6 @@ def find_track_items(
 
             if valid_items:
                 return valid_items
-
-        # ----------------------------------------------------
-        # songs: [...]
-        # ----------------------------------------------------
 
         songs = candidate.get(
             "songs"
@@ -1328,11 +1303,6 @@ def search_tracks(
     query: str,
     limit: int | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Search Spotify metadata through RapidAPI.
-
-    This endpoint is used ONLY for search/metadata.
-    """
 
     if not RAPIDAPI_KEY:
 
@@ -1544,10 +1514,6 @@ def search_tracks(
         if len(results) >= limit:
             break
 
-    # --------------------------------------------------------
-    # Remove duplicates.
-    # --------------------------------------------------------
-
     results = deduplicate_tracks(
         results
     )
@@ -1556,23 +1522,12 @@ def search_tracks(
 
 
 # ============================================================
-# PLAYLIST METADATA
+# PLAYLIST METADATA HELPERS
 # ============================================================
 
 def extract_playlist_items(
     payload: Any,
 ) -> list[dict[str, Any]]:
-    """
-    Extract playlist items from response structures.
-
-    This handles:
-
-        items: [...]
-        tracks: [...]
-        tracks: {items: [...]}
-        data.items
-        data.tracks.items
-    """
 
     if not isinstance(
         payload,
@@ -1660,22 +1615,6 @@ def extract_playlist_items(
 def normalize_playlist_item(
     item: dict[str, Any],
 ) -> dict[str, Any]:
-    """
-    Normalize playlist track objects.
-
-    Spotify playlist responses commonly wrap
-    the actual track in:
-
-        {
-            "track": {...}
-        }
-
-    Newer structures may use:
-
-        {
-            "item": {...}
-        }
-    """
 
     track = item
 
@@ -1949,7 +1888,9 @@ def format_search_results(
             results
         ):
 
-            lines.append("")
+            lines.append(
+                ""
+            )
 
     return "\n".join(
         lines
@@ -2038,3 +1979,4 @@ def friendly_error(
         "❌ <b>Spotify search failed.</b>\n\n"
         f"<code>{escape_html(message[:400])}</code>"
     )
+```
