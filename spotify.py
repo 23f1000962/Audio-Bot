@@ -1,26 +1,39 @@
 """
-Spotify search integration for Audio Bot.
+Spotify integration for Audio Bot.
 
-Supported Spotify triggers:
+Supported text searches:
 
-    <song name> spotify
-    <song name> - spotify
-    spotify <song name>
-    spotify - <song name>
+    Apna Bana Le spotify
+    Apna Bana Le - spotify
+    spotify Apna Bana Le
+    spotify - Apna Bana Le
 
-This module uses the RapidAPI Spotify Search endpoint
-for Spotify metadata/search only.
+Supported Spotify URL types:
+
+    track
+    album
+    playlist
+    artist
+
+This module uses RapidAPI for Spotify metadata/search only.
 
 IMPORTANT:
 This module does NOT download Spotify audio.
 
-RapidAPI host:
-    spotify-downloader9.p.rapidapi.com
+Audio flow remains:
 
-Search endpoint:
-    GET /search
+    Spotify metadata
+        ->
+    YouTube search
+        ->
+    yt-dlp
+        ->
+    FFmpeg
+        ->
+    Telegram
 
 Environment variables:
+
     RAPIDAPI_KEY
     RAPIDAPI_HOST
     SPOTIFY_SEARCH_LIMIT
@@ -93,7 +106,8 @@ SPOTIFY_URL_PATTERN = re.compile(
     r"https?://(?:open\.)?spotify\.com/"
     r"(?:intl-[^/]+/)?"
     r"(track|album|playlist|artist)/"
-    r"([A-Za-z0-9]+)",
+    r"([A-Za-z0-9]+)"
+    r"(?:\?[^\s]*)?",
     re.IGNORECASE,
 )
 
@@ -121,6 +135,12 @@ def clean_text(
     if value is None:
         return default
 
+    if isinstance(
+        value,
+        str,
+    ):
+        return value.strip()
+
     return str(value).strip()
 
 
@@ -131,6 +151,23 @@ def escape_html(
     return html.escape(
         clean_text(value)
     )
+
+
+def normalize_key(
+    value: Any,
+) -> str:
+
+    text = clean_text(
+        value
+    ).lower()
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
 
 
 # ============================================================
@@ -165,9 +202,18 @@ def parse_spotify_url(
     if not match:
         return None
 
+    resource_type = (
+        match.group(1)
+        .lower()
+    )
+
+    resource_id = (
+        match.group(2)
+    )
+
     return (
-        match.group(1).lower(),
-        match.group(2),
+        resource_type,
+        resource_id,
     )
 
 
@@ -185,7 +231,9 @@ def extract_spotify_track_id(
     if not match:
         return None
 
-    spotify_id = match.group(1)
+    spotify_id = (
+        match.group(1)
+    )
 
     if not SPOTIFY_ID_PATTERN.fullmatch(
         spotify_id
@@ -202,6 +250,18 @@ def build_spotify_url(
     return (
         "https://open.spotify.com/track/"
         f"{spotify_id}"
+    )
+
+
+def build_spotify_resource_url(
+    resource_type: str,
+    resource_id: str,
+) -> str:
+
+    return (
+        "https://open.spotify.com/"
+        f"{resource_type}/"
+        f"{resource_id}"
     )
 
 
@@ -232,10 +292,12 @@ def is_spotify_search(
         return False
 
     # Direct Spotify URL.
-    if is_spotify_url(value):
+    if is_spotify_url(
+        value
+    ):
         return True
 
-    # "song spotify"
+    # song spotify
     if re.search(
         r"(?:^|\s)spotify\s*$",
         value,
@@ -243,7 +305,7 @@ def is_spotify_search(
     ):
         return True
 
-    # "song - spotify"
+    # song - spotify
     if re.search(
         r"\s*-\s*spotify\s*$",
         value,
@@ -251,7 +313,7 @@ def is_spotify_search(
     ):
         return True
 
-    # "spotify song"
+    # spotify song
     if re.match(
         r"^\s*spotify(?:\s*-\s*|\s+).+",
         value,
@@ -288,11 +350,12 @@ def clean_spotify_query(
 
     query = text.strip()
 
-    # Direct URL should remain untouched.
-    if is_spotify_url(query):
+    # Direct URL remains untouched.
+    if is_spotify_url(
+        query
+    ):
         return query
 
-    # spotify - song
     query = re.sub(
         r"^\s*spotify\s*-\s*",
         "",
@@ -300,7 +363,6 @@ def clean_spotify_query(
         flags=re.IGNORECASE,
     )
 
-    # spotify song
     query = re.sub(
         r"^\s*spotify\s+",
         "",
@@ -309,7 +371,6 @@ def clean_spotify_query(
         flags=re.IGNORECASE,
     )
 
-    # song - spotify
     query = re.sub(
         r"\s*-\s*spotify\s*$",
         "",
@@ -317,7 +378,6 @@ def clean_spotify_query(
         flags=re.IGNORECASE,
     )
 
-    # song spotify
     query = re.sub(
         r"\s+spotify\s*$",
         "",
@@ -333,60 +393,191 @@ def clean_spotify_query(
 # ============================================================
 
 def extract_artists(
-    item: dict[str, Any],
+    item: Any,
 ) -> list[str]:
+    """
+    Extract artist names from multiple possible
+    RapidAPI/Spotify response structures.
+    """
 
-    artists = item.get(
-        "artists"
-    )
-
-    if not artists:
+    if not isinstance(
+        item,
+        dict,
+    ):
         return []
 
     result: list[str] = []
 
-    if isinstance(
-        artists,
-        list,
-    ):
+    candidates = [
+        item.get("artists"),
+        item.get("artist"),
+        item.get("artistName"),
+        item.get("artist_name"),
+    ]
 
-        for artist in artists:
+    # --------------------------------------------------------
+    # Direct artists
+    # --------------------------------------------------------
 
-            if isinstance(
-                artist,
-                str,
+    for artists in candidates:
+
+        if not artists:
+            continue
+
+        if isinstance(
+            artists,
+            list,
+        ):
+
+            for artist in artists:
+
+                if isinstance(
+                    artist,
+                    str,
+                ):
+
+                    name = artist.strip()
+
+                elif isinstance(
+                    artist,
+                    dict,
+                ):
+
+                    name = clean_text(
+                        artist.get("name")
+                        or artist.get("title")
+                        or artist.get("artist")
+                        or (
+                            artist.get(
+                                "profile",
+                                {},
+                            ).get("name")
+                            if isinstance(
+                                artist.get(
+                                    "profile"
+                                ),
+                                dict,
+                            )
+                            else ""
+                        )
+                    )
+
+                else:
+                    continue
+
+                if name:
+                    result.append(
+                        name
+                    )
+
+        elif isinstance(
+            artists,
+            dict,
+        ):
+
+            name = clean_text(
+                artists.get("name")
+                or artists.get("title")
+                or artists.get("artist")
+            )
+
+            if name:
+                result.append(
+                    name
+                )
+
+        elif isinstance(
+            artists,
+            str,
+        ):
+
+            # Some APIs return:
+            #
+            # "Arijit Singh, Sachin-Jigar"
+
+            for artist in artists.split(
+                ","
             ):
 
                 name = artist.strip()
 
-            elif isinstance(
-                artist,
-                dict,
-            ):
+                if name:
+                    result.append(
+                        name
+                    )
 
-                name = clean_text(
-                    artist.get("name")
-                    or artist.get("title")
-                )
+    # --------------------------------------------------------
+    # Nested Spotify-style artist data
+    # --------------------------------------------------------
 
-            else:
-                continue
+    nested_candidates = [
+        item.get("artist"),
+        item.get("artists"),
+    ]
+
+    for candidate in nested_candidates:
+
+        if not isinstance(
+            candidate,
+            dict,
+        ):
+            continue
+
+        profile = candidate.get(
+            "profile"
+        )
+
+        if isinstance(
+            profile,
+            dict,
+        ):
+
+            name = clean_text(
+                profile.get("name")
+            )
 
             if name:
-                result.append(name)
+                result.append(
+                    name
+                )
 
-    elif isinstance(
-        artists,
-        str,
-    ):
+        name = clean_text(
+            candidate.get("name")
+        )
 
-        result = [
-            artist.strip()
-            for artist in artists.split(",")
-            if artist.strip()
-        ]
+        if name:
+            result.append(
+                name
+            )
 
-    return result
+    # --------------------------------------------------------
+    # Remove duplicate artist names
+    # --------------------------------------------------------
+
+    unique: list[str] = []
+    seen: set[str] = set()
+
+    for artist in result:
+
+        key = normalize_key(
+            artist
+        )
+
+        if not key:
+            continue
+
+        if key in seen:
+            continue
+
+        seen.add(
+            key
+        )
+
+        unique.append(
+            artist
+        )
+
+    return unique
 
 
 def extract_artist(
@@ -402,10 +593,42 @@ def extract_artist(
             artists
         )
 
-    return clean_text(
-        item.get("artist"),
-        "Unknown Artist",
+    # Additional fallback fields.
+    for key in (
+        "artist",
+        "artistName",
+        "artist_name",
+        "performer",
+        "singer",
+    ):
+
+        value = clean_text(
+            item.get(key)
+        )
+
+        if value:
+            return value
+
+    # Nested album artist.
+    album = item.get(
+        "album"
     )
+
+    if isinstance(
+        album,
+        dict,
+    ):
+
+        artists = extract_artists(
+            album
+        )
+
+        if artists:
+            return ", ".join(
+                artists
+            )
+
+    return "Unknown Artist"
 
 
 # ============================================================
@@ -413,27 +636,24 @@ def extract_artist(
 # ============================================================
 
 def extract_cover(
-    item: dict[str, Any],
+    item: Any,
 ) -> str | None:
 
-    # Direct cover.
-    cover = item.get(
-        "cover"
-    )
+    if not isinstance(
+        item,
+        dict,
+    ):
+        return None
 
-    if isinstance(
-        cover,
-        str,
-    ) and cover.strip():
-
-        return cover.strip()
-
-    # Common image fields.
+    # Direct fields.
     for key in (
+        "cover",
         "thumbnail",
         "image",
         "image_url",
         "cover_url",
+        "thumbnailUrl",
+        "thumbnail_url",
     ):
 
         value = item.get(
@@ -447,7 +667,7 @@ def extract_cover(
 
             return value.strip()
 
-    # Spotify-style images list.
+    # Images list.
     images = item.get(
         "images"
     )
@@ -458,6 +678,13 @@ def extract_cover(
     ):
 
         for image in images:
+
+            if isinstance(
+                image,
+                str,
+            ) and image.strip():
+
+                return image.strip()
 
             if not isinstance(
                 image,
@@ -472,7 +699,43 @@ def extract_cover(
             if url:
                 return url
 
-    # Album artwork.
+    # Spotify coverArt structure.
+    cover_art = item.get(
+        "coverArt"
+    )
+
+    if isinstance(
+        cover_art,
+        dict,
+    ):
+
+        sources = cover_art.get(
+            "sources"
+        )
+
+        if isinstance(
+            sources,
+            list,
+        ):
+
+            for source in reversed(
+                sources
+            ):
+
+                if not isinstance(
+                    source,
+                    dict,
+                ):
+                    continue
+
+                url = clean_text(
+                    source.get("url")
+                )
+
+                if url:
+                    return url
+
+    # Nested album.
     album = item.get(
         "album"
     )
@@ -482,12 +745,12 @@ def extract_cover(
         dict,
     ):
 
-        album_cover = extract_cover(
+        cover = extract_cover(
             album
         )
 
-        if album_cover:
-            return album_cover
+        if cover:
+            return cover
 
     return None
 
@@ -505,10 +768,30 @@ def format_duration(
 
     if isinstance(
         value,
+        dict,
+    ):
+
+        value = (
+            value.get(
+                "totalMilliseconds"
+            )
+            or value.get(
+                "milliseconds"
+            )
+            or value.get(
+                "duration_ms"
+            )
+        )
+
+    if isinstance(
+        value,
         str,
     ):
 
         value = value.strip()
+
+        if not value:
+            return ""
 
         if ":" in value:
             return value
@@ -526,7 +809,7 @@ def format_duration(
 
         return ""
 
-    # Spotify normally returns duration_ms.
+    # Milliseconds.
     if number > 10000:
 
         total_seconds = int(
@@ -567,6 +850,345 @@ def format_duration(
 
 
 # ============================================================
+# TITLE EXTRACTION
+# ============================================================
+
+def extract_title(
+    item: dict[str, Any],
+) -> str:
+
+    # Standard fields.
+    for key in (
+        "title",
+        "name",
+        "trackName",
+        "track_name",
+    ):
+
+        value = clean_text(
+            item.get(key)
+        )
+
+        if value:
+            return value
+
+    # Nested Spotify item.
+    nested_item = item.get(
+        "item"
+    )
+
+    if isinstance(
+        nested_item,
+        dict,
+    ):
+
+        title = extract_title(
+            nested_item
+        )
+
+        if title:
+            return title
+
+    # Nested itemV2.
+    item_v2 = item.get(
+        "itemV2"
+    )
+
+    if isinstance(
+        item_v2,
+        dict,
+    ):
+
+        title = extract_title(
+            item_v2
+        )
+
+        if title:
+            return title
+
+    return "Unknown Track"
+
+
+# ============================================================
+# ALBUM EXTRACTION
+# ============================================================
+
+def extract_album(
+    item: dict[str, Any],
+) -> str:
+
+    album = item.get(
+        "album"
+    )
+
+    if isinstance(
+        album,
+        str,
+    ):
+
+        return album.strip()
+
+    if isinstance(
+        album,
+        dict,
+    ):
+
+        return clean_text(
+            album.get("name")
+            or album.get("title")
+        )
+
+    for key in (
+        "albumName",
+        "album_name",
+    ):
+
+        value = clean_text(
+            item.get(key)
+        )
+
+        if value:
+            return value
+
+    return "Unknown Album"
+
+
+# ============================================================
+# SPOTIFY ID EXTRACTION
+# ============================================================
+
+def extract_track_id(
+    item: dict[str, Any],
+) -> str:
+
+    for key in (
+        "id",
+        "track_id",
+        "spotify_id",
+    ):
+
+        value = clean_text(
+            item.get(key)
+        )
+
+        if value:
+            return value
+
+    # Spotify URI.
+    uri = clean_text(
+        item.get("uri")
+    )
+
+    if uri.startswith(
+        "spotify:track:"
+    ):
+
+        return uri.split(
+            "spotify:track:",
+            1,
+        )[1].strip()
+
+    # Nested item.
+    nested = item.get(
+        "item"
+    )
+
+    if isinstance(
+        nested,
+        dict,
+    ):
+
+        value = extract_track_id(
+            nested
+        )
+
+        if value:
+            return value
+
+    return ""
+
+
+# ============================================================
+# TRACK NORMALIZATION
+# ============================================================
+
+def normalize_track(
+    item: dict[str, Any],
+) -> dict[str, Any]:
+
+    if not isinstance(
+        item,
+        dict,
+    ):
+        return {}
+
+    spotify_id = extract_track_id(
+        item
+    )
+
+    title = extract_title(
+        item
+    )
+
+    artist = extract_artist(
+        item
+    )
+
+    album = extract_album(
+        item
+    )
+
+    duration = (
+        item.get("duration")
+        or item.get("duration_ms")
+        or item.get("length")
+    )
+
+    if not duration:
+
+        duration_data = item.get(
+            "trackDuration"
+        )
+
+        if isinstance(
+            duration_data,
+            dict,
+        ):
+
+            duration = duration_data
+
+    external_urls = item.get(
+        "external_urls"
+    )
+
+    spotify_url = ""
+
+    if isinstance(
+        external_urls,
+        dict,
+    ):
+
+        spotify_url = clean_text(
+            external_urls.get(
+                "spotify"
+            )
+        )
+
+    if (
+        not spotify_url
+        and spotify_id
+    ):
+
+        spotify_url = build_spotify_url(
+            spotify_id
+        )
+
+    return {
+        "id": spotify_id,
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "cover": extract_cover(
+            item
+        ),
+        "duration": format_duration(
+            duration
+        ),
+        "spotify_url": spotify_url,
+        "raw": item,
+    }
+
+
+# ============================================================
+# RESULT DEDUPLICATION
+# ============================================================
+
+def deduplicate_tracks(
+    tracks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Remove duplicate Spotify results.
+
+    Primary key:
+        Spotify track ID
+
+    Fallback:
+        normalized title + artist + duration
+    """
+
+    unique: list[
+        dict[str, Any]
+    ] = []
+
+    seen_ids: set[str] = set()
+    seen_fingerprints: set[str] = set()
+
+    for track in tracks:
+
+        if not track:
+            continue
+
+        title = clean_text(
+            track.get("title")
+        )
+
+        artist = clean_text(
+            track.get("artist")
+        )
+
+        if not title:
+            continue
+
+        spotify_id = clean_text(
+            track.get("id")
+        )
+
+        if spotify_id:
+
+            id_key = normalize_key(
+                spotify_id
+            )
+
+            if id_key in seen_ids:
+                continue
+
+            seen_ids.add(
+                id_key
+            )
+
+        else:
+
+            fingerprint = "|".join(
+                [
+                    normalize_key(
+                        title
+                    ),
+                    normalize_key(
+                        artist
+                    ),
+                    normalize_key(
+                        track.get(
+                            "duration"
+                        )
+                    ),
+                ]
+            )
+
+            if fingerprint in seen_fingerprints:
+                continue
+
+            seen_fingerprints.add(
+                fingerprint
+            )
+
+        unique.append(
+            track
+        )
+
+    return unique
+
+
+# ============================================================
 # API RESPONSE EXTRACTION
 # ============================================================
 
@@ -584,7 +1206,7 @@ def find_track_items(
     ):
         return []
 
-    candidates = [
+    candidates: list[Any] = [
         payload,
         payload.get("data"),
         payload.get("result"),
@@ -673,94 +1295,29 @@ def find_track_items(
             if valid_items:
                 return valid_items
 
+        # ----------------------------------------------------
+        # songs: [...]
+        # ----------------------------------------------------
+
+        songs = candidate.get(
+            "songs"
+        )
+
+        if isinstance(
+            songs,
+            list,
+        ):
+
+            return [
+                item
+                for item in songs
+                if isinstance(
+                    item,
+                    dict,
+                )
+            ]
+
     return []
-
-
-# ============================================================
-# TRACK NORMALIZATION
-# ============================================================
-
-def normalize_track(
-    item: dict[str, Any],
-) -> dict[str, Any]:
-
-    spotify_id = clean_text(
-        item.get("id")
-        or item.get("track_id")
-        or item.get("spotify_id")
-    )
-
-    title = clean_text(
-        item.get("title")
-        or item.get("name"),
-        "Unknown Track",
-    )
-
-    artist = extract_artist(
-        item
-    )
-
-    album_data = item.get(
-        "album"
-    )
-
-    if isinstance(
-        album_data,
-        dict,
-    ):
-
-        album = clean_text(
-            album_data.get("name")
-            or album_data.get("title"),
-            "Unknown Album",
-        )
-
-    else:
-
-        album = clean_text(
-            album_data,
-            "Unknown Album",
-        )
-
-    duration = (
-        item.get("duration")
-        or item.get("duration_ms")
-        or item.get("length")
-    )
-
-    external_urls = item.get(
-        "external_urls"
-    )
-
-    spotify_url = ""
-
-    if isinstance(
-        external_urls,
-        dict,
-    ):
-
-        spotify_url = clean_text(
-            external_urls.get(
-                "spotify"
-            )
-        )
-
-    if not spotify_url and spotify_id:
-
-        spotify_url = build_spotify_url(
-            spotify_id
-        )
-
-    return {
-        "id": spotify_id,
-        "title": title,
-        "artist": artist,
-        "album": album,
-        "cover": extract_cover(item),
-        "duration": format_duration(duration),
-        "spotify_url": spotify_url,
-        "raw": item,
-    }
 
 
 # ============================================================
@@ -775,9 +1332,6 @@ def search_tracks(
     Search Spotify metadata through RapidAPI.
 
     This endpoint is used ONLY for search/metadata.
-
-    It is deliberately not used to download Spotify
-    audio.
     """
 
     if not RAPIDAPI_KEY:
@@ -963,18 +1517,23 @@ def search_tracks(
     if not items:
         return []
 
-    results = []
+    results: list[
+        dict[str, Any]
+    ] = []
 
-    for item in items[:limit]:
+    for item in items:
 
         track = normalize_track(
             item
         )
 
-        # Do not display completely unusable results.
+        title = clean_text(
+            track.get("title")
+        )
+
         if (
-            not track["title"]
-            or track["title"] == "Unknown Track"
+            not title
+            or title == "Unknown Track"
         ):
             continue
 
@@ -982,11 +1541,206 @@ def search_tracks(
             track
         )
 
-    return results
+        if len(results) >= limit:
+            break
+
+    # --------------------------------------------------------
+    # Remove duplicates.
+    # --------------------------------------------------------
+
+    results = deduplicate_tracks(
+        results
+    )
+
+    return results[:limit]
 
 
 # ============================================================
-# MAIN SEARCH FUNCTION
+# PLAYLIST METADATA
+# ============================================================
+
+def extract_playlist_items(
+    payload: Any,
+) -> list[dict[str, Any]]:
+    """
+    Extract playlist items from response structures.
+
+    This handles:
+
+        items: [...]
+        tracks: [...]
+        tracks: {items: [...]}
+        data.items
+        data.tracks.items
+    """
+
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        return []
+
+    candidates: list[Any] = [
+        payload,
+        payload.get("data"),
+        payload.get("result"),
+        payload.get("results"),
+    ]
+
+    for candidate in candidates:
+
+        if not isinstance(
+            candidate,
+            dict,
+        ):
+            continue
+
+        items = candidate.get(
+            "items"
+        )
+
+        if isinstance(
+            items,
+            list,
+        ):
+
+            return [
+                item
+                for item in items
+                if isinstance(
+                    item,
+                    dict,
+                )
+            ]
+
+        tracks = candidate.get(
+            "tracks"
+        )
+
+        if isinstance(
+            tracks,
+            list,
+        ):
+
+            return [
+                item
+                for item in tracks
+                if isinstance(
+                    item,
+                    dict,
+                )
+            ]
+
+        if isinstance(
+            tracks,
+            dict,
+        ):
+
+            nested_items = tracks.get(
+                "items"
+            )
+
+            if isinstance(
+                nested_items,
+                list,
+            ):
+
+                return [
+                    item
+                    for item in nested_items
+                    if isinstance(
+                        item,
+                        dict,
+                    )
+                ]
+
+    return []
+
+
+def normalize_playlist_item(
+    item: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Normalize playlist track objects.
+
+    Spotify playlist responses commonly wrap
+    the actual track in:
+
+        {
+            "track": {...}
+        }
+
+    Newer structures may use:
+
+        {
+            "item": {...}
+        }
+    """
+
+    track = item
+
+    nested = (
+        item.get("track")
+        or item.get("item")
+    )
+
+    if isinstance(
+        nested,
+        dict,
+    ):
+
+        track = nested
+
+    return normalize_track(
+        track
+    )
+
+
+def normalize_playlist_tracks(
+    items: list[dict[str, Any]],
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+
+    if limit is None:
+
+        limit = max(
+            1,
+            SPOTIFY_SEARCH_LIMIT,
+        )
+
+    tracks: list[
+        dict[str, Any]
+    ] = []
+
+    for item in items:
+
+        track = normalize_playlist_item(
+            item
+        )
+
+        title = clean_text(
+            track.get("title")
+        )
+
+        if (
+            not title
+            or title == "Unknown Track"
+        ):
+            continue
+
+        tracks.append(
+            track
+        )
+
+    tracks = deduplicate_tracks(
+        tracks
+    )
+
+    return tracks[:limit]
+
+
+# ============================================================
+# MAIN SPOTIFY SEARCH FUNCTION
 # ============================================================
 
 def search_spotify(
@@ -997,15 +1751,18 @@ def search_spotify(
     Process a Spotify request.
 
     Text search:
+
         Apna Bana Le spotify
 
     Direct URL:
+
         https://open.spotify.com/track/...
 
-    NOTE:
-    Direct Spotify URLs are detected and returned as
-    URL metadata, but are not sent to the /search
-    endpoint because /search requires text.
+        https://open.spotify.com/playlist/...
+
+    The function returns the resource type and ID
+    for direct Spotify URLs so bot.py can handle
+    the appropriate resource.
     """
 
     if not is_spotify_search(
@@ -1015,6 +1772,8 @@ def search_spotify(
         return {
             "is_spotify": False,
             "is_url": False,
+            "resource_type": None,
+            "resource_id": None,
             "query": clean_text(
                 user_text
             ),
@@ -1029,7 +1788,9 @@ def search_spotify(
     # DIRECT SPOTIFY URL
     # ========================================================
 
-    if is_spotify_url(query):
+    if is_spotify_url(
+        query
+    ):
 
         resource = parse_spotify_url(
             query
@@ -1071,6 +1832,8 @@ def search_spotify(
         return {
             "is_spotify": True,
             "is_url": False,
+            "resource_type": None,
+            "resource_id": None,
             "query": "",
             "results": [],
         }
@@ -1087,6 +1850,8 @@ def search_spotify(
     return {
         "is_spotify": True,
         "is_url": False,
+        "resource_type": None,
+        "resource_id": None,
         "query": query,
         "results": results,
     }
@@ -1122,12 +1887,17 @@ def format_result(
         f"👤 {artist}",
     ]
 
-    if album:
+    if (
+        album
+        and album != "Unknown Album"
+    ):
+
         lines.append(
             f"💿 {album}"
         )
 
     if duration:
+
         lines.append(
             f"⏱ {duration}"
         )
@@ -1175,7 +1945,10 @@ def format_search_results(
             )
         )
 
-        if index != len(results):
+        if index != len(
+            results
+        ):
+
             lines.append("")
 
     return "\n".join(
@@ -1198,6 +1971,12 @@ def spotify_status() -> dict[str, Any]:
         "search_type": "tracks",
         "search_limit": SPOTIFY_SEARCH_LIMIT,
         "audio_download": False,
+        "spotify_url_types": [
+            "track",
+            "album",
+            "playlist",
+            "artist",
+        ],
     }
 
 
