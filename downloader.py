@@ -71,26 +71,28 @@ RETRY_BACKOFF = max(
 
 # Render Secret File:
 #
-# Render Dashboard
-#     ↓
-# Environment
-#     ↓
-# Secret Files
-#     ↓
-# cookies.txt
-#
-# Render exposes it as:
-#
 # /etc/secrets/cookies.txt
 #
-# NEVER put this file in GitHub.
-# NEVER print its contents.
+# Render Secret Files are READ-ONLY.
+#
+# Therefore we copy the secret cookie file into /tmp
+# and let yt-dlp use the writable copy.
+#
+# NEVER put cookies.txt in GitHub.
+# NEVER print cookie contents.
 # NEVER log cookie values.
 
 COOKIE_FILE = Path(
     os.getenv(
         "YOUTUBE_COOKIE_FILE",
         "/etc/secrets/cookies.txt"
+    )
+)
+
+RUNTIME_COOKIE_FILE = Path(
+    os.getenv(
+        "YOUTUBE_RUNTIME_COOKIE_FILE",
+        "/tmp/youtube-cookies.txt"
     )
 )
 
@@ -106,6 +108,53 @@ def cookies_available() -> bool:
         )
 
     except Exception:
+
+        return False
+
+
+def prepare_cookie_file():
+
+    if not cookies_available():
+
+        return False
+
+    try:
+
+        RUNTIME_COOKIE_FILE.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        shutil.copyfile(
+            COOKIE_FILE,
+            RUNTIME_COOKIE_FILE,
+        )
+
+        # Restrict permissions where supported.
+        try:
+
+            os.chmod(
+                RUNTIME_COOKIE_FILE,
+                0o600,
+            )
+
+        except OSError:
+
+            pass
+
+        print(
+            "YouTube cookies: available "
+            "(copied to writable runtime file)"
+        )
+
+        return True
+
+    except Exception as error:
+
+        print(
+            "YouTube cookies: failed to prepare "
+            f"runtime copy: {type(error).__name__}"
+        )
 
         return False
 
@@ -264,7 +313,6 @@ class ProgressTracker:
     ):
 
         self.callback = callback
-
         self.last_percent = -1
 
     def hook(
@@ -596,12 +644,16 @@ def build_ydl_options(
     # COOKIES
     # ========================================================
 
-    if cookies_available():
+    # IMPORTANT:
+    # Use the writable runtime copy, NOT the Render
+    # read-only Secret File.
+
+    if RUNTIME_COOKIE_FILE.exists():
 
         options[
             "cookiefile"
         ] = str(
-            COOKIE_FILE
+            RUNTIME_COOKIE_FILE
         )
 
     return options
@@ -864,8 +916,15 @@ def download_with_client(
     print(
         "Cookies:",
         "enabled"
-        if cookies_available()
+        if RUNTIME_COOKIE_FILE.exists()
         else "disabled",
+    )
+
+    print(
+        "Cookie source:",
+        "writable runtime copy"
+        if RUNTIME_COOKIE_FILE.exists()
+        else "none",
     )
 
     print(
@@ -1128,6 +1187,9 @@ def download_sync(
 
     verify_cookie_file()
 
+    # Prepare a writable copy of the Render Secret File.
+    prepare_cookie_file()
+
     output_dir.mkdir(
         parents=True,
         exist_ok=True,
@@ -1159,12 +1221,10 @@ def download_sync(
     #   HLS-capable fallback
     #
     # android_vr:
-    #   Does not currently require GVS PO token
+    #   Fallback client
     #
     # web_embedded:
-    #   Does not currently require GVS PO token,
-    #   but only works for embeddable videos.
-    #
+    #   Final fallback
     # ========================================================
 
     clients = [
@@ -1265,9 +1325,7 @@ def download_sync(
 
     except Exception:
 
-        # ----------------------------------------------------
-        # Failed job = safe to remove completely
-        # ----------------------------------------------------
+        # Failed job = safe to remove completely.
 
         shutil.rmtree(
             job_dir,
