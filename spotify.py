@@ -1,28 +1,38 @@
 """
-Spotify metadata integration for Audio Bot.
+Spotify search integration for Audio Bot.
 
-Supported:
-    - Spotify track URLs
-    - Spotify album URLs
-    - Spotify playlist URLs
+Spotify mode is explicitly triggered by:
+    <song name> spotify
+    <song name> - spotify
+    spotify <song name>
+    spotify - <song name>
 
-This module retrieves Spotify metadata only.
-It does NOT download, rip, or extract Spotify audio streams.
+Direct Spotify track URLs are also recognized.
 
-Required environment variables:
-    SPOTIFY_CLIENT_ID
-    SPOTIFY_CLIENT_SECRET
+This module uses the RapidAPI Spotify Search endpoint.
+
+RapidAPI host:
+    spotify-downloader9.p.rapidapi.com
+
+Search parameters:
+    q
+    type=tracks
+    limit
+
+Environment variables:
+    RAPIDAPI_KEY
+    RAPIDAPI_HOST
 """
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import re
 from typing import Any
 
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
+import requests
 
 
 logger = logging.getLogger(__name__)
@@ -32,872 +42,1194 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # ============================================================
 
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+RAPIDAPI_KEY = os.getenv(
+    "RAPIDAPI_KEY",
+    "",
+).strip()
+
+RAPIDAPI_HOST = os.getenv(
+    "RAPIDAPI_HOST",
+    "spotify-downloader9.p.rapidapi.com",
+).strip()
+
+SPOTIFY_SEARCH_URL = (
+    f"https://{RAPIDAPI_HOST}/search"
+)
+
+SPOTIFY_TIMEOUT = int(
+    os.getenv(
+        "SPOTIFY_TIMEOUT",
+        "20",
+    )
+)
+
+# Number of Spotify results returned to the bot.
+SPOTIFY_SEARCH_LIMIT = int(
+    os.getenv(
+        "SPOTIFY_SEARCH_LIMIT",
+        "8",
+    )
+)
+
+# Maximum allowed results.
+SPOTIFY_MAX_RESULTS = 20
 
 
-# Spotify URL formats:
-#
-# https://open.spotify.com/track/xxxxxxxxxxxxxxxxxxxx
-# https://open.spotify.com/album/xxxxxxxxxxxxxxxxxxxx
-# https://open.spotify.com/playlist/xxxxxxxxxxxxxxxxxxxx
-#
-# Also accepts URLs containing query parameters such as:
-# ?si=xxxxxxxx
-# ?nd=1
-#
+# ============================================================
+# REGEX
+# ============================================================
+
 SPOTIFY_URL_PATTERN = re.compile(
     r"https?://(?:open\.)?spotify\.com/"
-    r"(track|album|playlist)/"
+    r"(track|album|playlist|artist)/"
     r"([A-Za-z0-9]+)",
     re.IGNORECASE,
 )
 
+SPOTIFY_TRACK_URL_PATTERN = re.compile(
+    r"https?://(?:open\.)?spotify\.com/"
+    r"track/"
+    r"([A-Za-z0-9]+)",
+    re.IGNORECASE,
+)
 
-# Spotify IDs are normally 22 characters.
-SPOTIFY_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{22}$")
+SPOTIFY_ID_PATTERN = re.compile(
+    r"^[A-Za-z0-9]{22}$"
+)
 
 
 # ============================================================
-# CLIENT
+# SPOTIFY COMMAND DETECTION
 # ============================================================
 
-_spotify_client: spotipy.Spotify | None = None
-
-
-def is_spotify_configured() -> bool:
+def is_spotify_url(
+    text: str,
+) -> bool:
     """
-    Return True if Spotify credentials are configured.
+    Check whether text contains a Spotify URL.
     """
+
+    if not text:
+        return False
+
     return bool(
-        SPOTIFY_CLIENT_ID
-        and SPOTIFY_CLIENT_SECRET
+        SPOTIFY_URL_PATTERN.search(
+            text.strip()
+        )
     )
 
 
-def get_spotify_client() -> spotipy.Spotify:
+def is_spotify_search(
+    text: str,
+) -> bool:
     """
-    Create and cache a Spotify API client.
+    Determine whether the user explicitly requested
+    Spotify search.
 
-    Uses Spotify Client Credentials authentication.
+    Supported forms:
+
+        Apna Bana Le spotify
+        Apna Bana Le - spotify
+        spotify Apna Bana Le
+        spotify - Apna Bana Le
+
+    Case-insensitive.
     """
-    global _spotify_client
 
-    if _spotify_client is not None:
-        return _spotify_client
+    if not text:
+        return False
 
-    if not is_spotify_configured():
-        raise RuntimeError(
-            "Spotify is not configured. "
-            "Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET."
+    value = text.strip()
+
+    if not value:
+        return False
+
+    # Direct Spotify URL.
+    if is_spotify_url(value):
+        return True
+
+    # "song spotify"
+    if re.search(
+        r"(?:^|\s|-)spotify\s*$",
+        value,
+        re.IGNORECASE,
+    ):
+        return True
+
+    # "song - spotify"
+    if re.search(
+        r"\s*-\s*spotify\s*$",
+        value,
+        re.IGNORECASE,
+    ):
+        return True
+
+    # "spotify song"
+    if re.match(
+        r"^\s*spotify(?:\s*-\s*|\s+).+",
+        value,
+        re.IGNORECASE,
+    ):
+        return True
+
+    return False
+
+
+def clean_spotify_query(
+    text: str,
+) -> str:
+    """
+    Remove the Spotify trigger from a user query.
+
+    Examples:
+
+        "Apna Bana Le spotify"
+            -> "Apna Bana Le"
+
+        "Apna Bana Le - spotify"
+            -> "Apna Bana Le"
+
+        "spotify Apna Bana Le"
+            -> "Apna Bana Le"
+
+        "spotify - Apna Bana Le"
+            -> "Apna Bana Le"
+    """
+
+    if not text:
+        return ""
+
+    query = text.strip()
+
+    # Remove Spotify URL handling separately.
+    if is_spotify_url(query):
+        return query
+
+    # --------------------------------------------------------
+    # "spotify - song"
+    # --------------------------------------------------------
+
+    query = re.sub(
+        r"^\s*spotify\s*-\s*",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    )
+
+    # --------------------------------------------------------
+    # "spotify song"
+    # --------------------------------------------------------
+
+    if re.match(
+        r"^\s*spotify\s+",
+        query,
+        re.IGNORECASE,
+    ):
+        query = re.sub(
+            r"^\s*spotify\s+",
+            "",
+            query,
+            count=1,
+            flags=re.IGNORECASE,
         )
 
-    auth_manager = SpotifyClientCredentials(
-        client_id=SPOTIFY_CLIENT_ID,
-        client_secret=SPOTIFY_CLIENT_SECRET,
+    # --------------------------------------------------------
+    # "song - spotify"
+    # --------------------------------------------------------
+
+    query = re.sub(
+        r"\s*-\s*spotify\s*$",
+        "",
+        query,
+        flags=re.IGNORECASE,
     )
 
-    _spotify_client = spotipy.Spotify(
-        auth_manager=auth_manager,
-        requests_timeout=15,
-        retries=2,
+    # --------------------------------------------------------
+    # "song spotify"
+    # --------------------------------------------------------
+
+    query = re.sub(
+        r"\s+spotify\s*$",
+        "",
+        query,
+        flags=re.IGNORECASE,
     )
 
-    logger.info("Spotify client initialized")
-
-    return _spotify_client
+    return query.strip()
 
 
 # ============================================================
 # URL HELPERS
 # ============================================================
 
-def is_spotify_url(url: str) -> bool:
+def parse_spotify_url(
+    url: str,
+) -> tuple[str, str] | None:
     """
-    Check whether a string is a supported Spotify URL.
-    """
-    if not url:
-        return False
+    Extract Spotify resource type and ID.
 
-    return bool(SPOTIFY_URL_PATTERN.search(url.strip()))
+    Example:
 
-
-def parse_spotify_url(url: str) -> tuple[str, str] | None:
-    """
-    Extract Spotify resource type and Spotify ID.
+        https://open.spotify.com/track/7jT3LcNj4XPYOlbNkPWNhU
 
     Returns:
-        ("track", "spotify_id")
-        ("album", "spotify_id")
-        ("playlist", "spotify_id")
 
-    Returns None if the URL is unsupported.
+        ("track", "7jT3LcNj4XPYOlbNkPWNhU")
     """
+
     if not url:
         return None
 
-    match = SPOTIFY_URL_PATTERN.search(url.strip())
+    match = SPOTIFY_URL_PATTERN.search(
+        url.strip()
+    )
 
     if not match:
         return None
 
-    resource_type = match.group(1).lower()
-    spotify_id = match.group(2)
+    return (
+        match.group(1).lower(),
+        match.group(2),
+    )
 
-    return resource_type, spotify_id
 
-
-def is_valid_spotify_id(spotify_id: str) -> bool:
+def extract_spotify_track_id(
+    url: str,
+) -> str | None:
     """
-    Validate a Spotify ID.
+    Extract a Spotify track ID from a track URL.
     """
-    if not spotify_id:
-        return False
 
-    return bool(
-        SPOTIFY_ID_PATTERN.fullmatch(
-            spotify_id.strip()
-        )
+    if not url:
+        return None
+
+    match = SPOTIFY_TRACK_URL_PATTERN.search(
+        url.strip()
+    )
+
+    if not match:
+        return None
+
+    spotify_id = match.group(1)
+
+    if not SPOTIFY_ID_PATTERN.fullmatch(
+        spotify_id
+    ):
+        return None
+
+    return spotify_id
+
+
+def build_spotify_url(
+    spotify_id: str,
+) -> str:
+    """
+    Build a Spotify track URL.
+    """
+
+    return (
+        "https://open.spotify.com/track/"
+        f"{spotify_id}"
     )
 
 
 # ============================================================
-# GENERAL HELPERS
+# TEXT HELPERS
 # ============================================================
 
-def _safe_text(value: Any, default: str = "") -> str:
+def clean_text(
+    value: Any,
+    default: str = "",
+) -> str:
     """
-    Convert a value to clean text safely.
+    Safely convert a value into a clean string.
     """
+
     if value is None:
         return default
 
     return str(value).strip()
 
 
-def _get_artists(item: dict[str, Any]) -> list[str]:
+def escape_html(
+    value: Any,
+) -> str:
     """
-    Extract artist names from a Spotify track-like object.
+    Escape text before displaying it in Telegram HTML.
     """
-    artists = item.get("artists") or []
 
-    result = []
+    return html.escape(
+        clean_text(value)
+    )
 
-    for artist in artists:
-        if not isinstance(artist, dict):
-            continue
 
-        name = _safe_text(artist.get("name"))
+# ============================================================
+# ARTIST EXTRACTION
+# ============================================================
 
-        if name:
-            result.append(name)
+def extract_artists(
+    item: dict[str, Any],
+) -> list[str]:
+    """
+    Extract artist names from possible API formats.
+    """
+
+    artists = item.get("artists")
+
+    if not artists:
+        return []
+
+    result: list[str] = []
+
+    if isinstance(
+        artists,
+        list,
+    ):
+        for artist in artists:
+
+            if isinstance(
+                artist,
+                str,
+            ):
+                name = artist.strip()
+
+            elif isinstance(
+                artist,
+                dict,
+            ):
+                name = clean_text(
+                    artist.get("name")
+                    or artist.get("title")
+                )
+
+            else:
+                continue
+
+            if name:
+                result.append(name)
+
+    elif isinstance(
+        artists,
+        str,
+    ):
+        result = [
+            artist.strip()
+            for artist in artists.split(",")
+            if artist.strip()
+        ]
 
     return result
 
 
-def _get_artist_string(item: dict[str, Any]) -> str:
+def extract_artist(
+    item: dict[str, Any],
+) -> str:
     """
-    Return artists as a comma-separated string.
+    Extract a formatted artist string.
     """
-    artists = _get_artists(item)
 
-    return ", ".join(artists) if artists else "Unknown Artist"
+    artists = extract_artists(
+        item
+    )
+
+    if artists:
+        return ", ".join(
+            artists
+        )
+
+    return clean_text(
+        item.get("artist"),
+        "Unknown Artist",
+    )
 
 
-def _get_image_url(item: dict[str, Any]) -> str | None:
+# ============================================================
+# COVER EXTRACTION
+# ============================================================
+
+def extract_cover(
+    item: dict[str, Any],
+) -> str | None:
     """
-    Get the first available Spotify image URL.
+    Extract artwork URL from possible API formats.
     """
-    images = item.get("images") or []
 
-    if not images:
-        return None
+    # Direct cover field.
+    cover = item.get("cover")
 
-    for image in images:
-        if not isinstance(image, dict):
-            continue
+    if isinstance(
+        cover,
+        str,
+    ) and cover.strip():
 
-        url = _safe_text(image.get("url"))
+        return cover.strip()
 
-        if url:
-            return url
+    # Other common fields.
+    for key in (
+        "thumbnail",
+        "image",
+        "image_url",
+        "cover_url",
+    ):
+
+        value = item.get(key)
+
+        if isinstance(
+            value,
+            str,
+        ) and value.strip():
+
+            return value.strip()
+
+    # Spotify-style images list.
+    images = item.get(
+        "images"
+    )
+
+    if isinstance(
+        images,
+        list,
+    ):
+
+        for image in images:
+
+            if not isinstance(
+                image,
+                dict,
+            ):
+                continue
+
+            url = clean_text(
+                image.get("url")
+            )
+
+            if url:
+                return url
+
+    # Album-level artwork.
+    album = item.get(
+        "album"
+    )
+
+    if isinstance(
+        album,
+        dict,
+    ):
+
+        album_cover = extract_cover(
+            album
+        )
+
+        if album_cover:
+            return album_cover
 
     return None
 
 
-def _format_duration(milliseconds: Any) -> str:
+# ============================================================
+# DURATION
+# ============================================================
+
+def format_duration(
+    value: Any,
+) -> str:
     """
-    Convert Spotify duration in milliseconds to MM:SS or HH:MM:SS.
+    Format duration.
+
+    Supports:
+        milliseconds
+        seconds
+        already formatted strings
     """
+
+    if value is None:
+        return ""
+
+    if isinstance(
+        value,
+        str,
+    ):
+
+        value = value.strip()
+
+        if ":" in value:
+            return value
+
     try:
-        milliseconds = int(milliseconds)
-    except (TypeError, ValueError):
-        return "Unknown"
+        number = float(
+            value
+        )
 
-    if milliseconds <= 0:
-        return "Unknown"
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return ""
 
-    total_seconds = milliseconds // 1000
+    # Spotify duration_ms is normally > 10000.
+    if number > 10000:
+        total_seconds = int(
+            number / 1000
+        )
+    else:
+        total_seconds = int(
+            number
+        )
 
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
+    if total_seconds <= 0:
+        return ""
+
+    minutes, seconds = divmod(
+        total_seconds,
+        60,
+    )
+
+    hours, minutes = divmod(
+        minutes,
+        60,
+    )
 
     if hours:
-        return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return (
+            f"{hours}:"
+            f"{minutes:02d}:"
+            f"{seconds:02d}"
+        )
 
-    return f"{minutes}:{seconds:02d}"
-
-
-def _spotify_url(
-    resource_type: str,
-    spotify_id: str,
-) -> str:
-    """
-    Build a canonical Spotify URL.
-    """
     return (
-        f"https://open.spotify.com/"
-        f"{resource_type}/{spotify_id}"
+        f"{minutes}:"
+        f"{seconds:02d}"
     )
 
 
 # ============================================================
-# TRACK
+# RESPONSE EXTRACTION
 # ============================================================
 
-def get_track(
-    spotify_id: str,
-    market: str = "IN",
-) -> dict[str, Any]:
+def find_track_items(
+    payload: Any,
+) -> list[dict[str, Any]]:
     """
-    Fetch metadata for one Spotify track.
+    Extract track objects from the API response.
 
-    Returns a normalized dictionary.
+    Supports multiple common response structures.
     """
-    if not is_valid_spotify_id(spotify_id):
-        raise ValueError("Invalid Spotify track ID.")
 
-    spotify = get_spotify_client()
+    if not isinstance(
+        payload,
+        dict,
+    ):
+        return []
 
-    track = spotify.track(
-        spotify_id,
-        market=market,
-    )
+    candidates: list[Any] = [
+        payload,
+        payload.get("data"),
+        payload.get("result"),
+        payload.get("results"),
+    ]
 
-    if not track:
-        raise RuntimeError(
-            "Spotify returned no track information."
-        )
+    for candidate in candidates:
 
-    track_id = _safe_text(track.get("id"), spotify_id)
-
-    album = track.get("album") or {}
-
-    return {
-        "type": "track",
-        "id": track_id,
-        "title": _safe_text(
-            track.get("name"),
-            "Unknown Track",
-        ),
-        "artist": _get_artist_string(track),
-        "artists": _get_artists(track),
-        "album": _safe_text(
-            album.get("name"),
-            "Unknown Album",
-        ),
-        "duration_ms": track.get("duration_ms"),
-        "duration": _format_duration(
-            track.get("duration_ms")
-        ),
-        "explicit": bool(
-            track.get("explicit", False)
-        ),
-        "preview_url": track.get("preview_url"),
-        "image_url": _get_image_url(album),
-        "spotify_url": (
-            (track.get("external_urls") or {}).get(
-                "spotify"
-            )
-            or _spotify_url("track", track_id)
-        ),
-    }
-
-
-# ============================================================
-# ALBUM
-# ============================================================
-
-def get_album(
-    spotify_id: str,
-    market: str = "IN",
-) -> dict[str, Any]:
-    """
-    Fetch album metadata and its tracks.
-    """
-    if not is_valid_spotify_id(spotify_id):
-        raise ValueError("Invalid Spotify album ID.")
-
-    spotify = get_spotify_client()
-
-    album = spotify.album(
-        spotify_id,
-        market=market,
-    )
-
-    if not album:
-        raise RuntimeError(
-            "Spotify returned no album information."
-        )
-
-    album_id = _safe_text(
-        album.get("id"),
-        spotify_id,
-    )
-
-    tracks = []
-
-    track_page = album.get("tracks") or {}
-
-    for item in track_page.get("items") or []:
-        if not isinstance(item, dict):
+        if not isinstance(
+            candidate,
+            dict,
+        ):
             continue
 
-        track_id = _safe_text(item.get("id"))
-
-        if not track_id:
-            continue
-
-        tracks.append(
-            {
-                "type": "track",
-                "id": track_id,
-                "title": _safe_text(
-                    item.get("name"),
-                    "Unknown Track",
-                ),
-                "artist": _get_artist_string(item),
-                "artists": _get_artists(item),
-                "duration_ms": item.get("duration_ms"),
-                "duration": _format_duration(
-                    item.get("duration_ms")
-                ),
-                "track_number": item.get(
-                    "track_number"
-                ),
-                "explicit": bool(
-                    item.get("explicit", False)
-                ),
-                "spotify_url": (
-                    (item.get("external_urls") or {}).get(
-                        "spotify"
-                    )
-                    or _spotify_url(
-                        "track",
-                        track_id,
-                    )
-                ),
-            }
+        # tracks: [...]
+        tracks = candidate.get(
+            "tracks"
         )
 
-    return {
-        "type": "album",
-        "id": album_id,
-        "title": _safe_text(
-            album.get("name"),
-            "Unknown Album",
-        ),
-        "artist": _get_artist_string(album),
-        "artists": _get_artists(album),
-        "release_date": _safe_text(
-            album.get("release_date")
-        ),
-        "total_tracks": album.get(
-            "total_tracks",
-            len(tracks),
-        ),
-        "image_url": _get_image_url(album),
-        "tracks": tracks,
-        "spotify_url": (
-            (album.get("external_urls") or {}).get(
-                "spotify"
-            )
-            or _spotify_url(
-                "album",
-                album_id,
-            )
-        ),
-    }
+        if isinstance(
+            tracks,
+            list,
+        ):
 
-
-# ============================================================
-# PLAYLIST
-# ============================================================
-
-def get_playlist(
-    spotify_id: str,
-    market: str = "IN",
-    max_tracks: int = 100,
-) -> dict[str, Any]:
-    """
-    Fetch public Spotify playlist metadata.
-
-    max_tracks prevents a huge playlist from generating
-    an unnecessarily large API response.
-
-    The playlist is returned as metadata only.
-    """
-    if not is_valid_spotify_id(spotify_id):
-        raise ValueError(
-            "Invalid Spotify playlist ID."
-        )
-
-    if max_tracks < 1:
-        max_tracks = 1
-
-    max_tracks = min(max_tracks, 500)
-
-    spotify = get_spotify_client()
-
-    playlist = spotify.playlist(
-        spotify_id,
-        market=market,
-    )
-
-    if not playlist:
-        raise RuntimeError(
-            "Spotify returned no playlist information."
-        )
-
-    playlist_id = _safe_text(
-        playlist.get("id"),
-        spotify_id,
-    )
-
-    tracks = []
-
-    offset = 0
-    page_size = 100
-
-    while len(tracks) < max_tracks:
-        remaining = max_tracks - len(tracks)
-
-        limit = min(
-            page_size,
-            remaining,
-        )
-
-        page = spotify.playlist_items(
-            playlist_id,
-            market=market,
-            limit=limit,
-            offset=offset,
-            additional_types=("track",),
-        )
-
-        items = page.get("items") or []
-
-        if not items:
-            break
-
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-
-            track = item.get("track")
-
-            if not isinstance(track, dict):
-                continue
-
-            track_id = _safe_text(
-                track.get("id")
-            )
-
-            if not track_id:
-                continue
-
-            tracks.append(
-                {
-                    "type": "track",
-                    "id": track_id,
-                    "title": _safe_text(
-                        track.get("name"),
-                        "Unknown Track",
-                    ),
-                    "artist": _get_artist_string(
-                        track
-                    ),
-                    "artists": _get_artists(
-                        track
-                    ),
-                    "album": _safe_text(
-                        (
-                            track.get("album")
-                            or {}
-                        ).get("name"),
-                        "Unknown Album",
-                    ),
-                    "duration_ms": track.get(
-                        "duration_ms"
-                    ),
-                    "duration": _format_duration(
-                        track.get(
-                            "duration_ms"
-                        )
-                    ),
-                    "explicit": bool(
-                        track.get(
-                            "explicit",
-                            False,
-                        )
-                    ),
-                    "spotify_url": (
-                        (
-                            track.get(
-                                "external_urls"
-                            )
-                            or {}
-                        ).get("spotify")
-                        or _spotify_url(
-                            "track",
-                            track_id,
-                        )
-                    ),
-                }
-            )
-
-            if len(tracks) >= max_tracks:
-                break
-
-        next_page = page.get("next")
-
-        if not next_page:
-            break
-
-        offset += len(items)
-
-        if len(items) == 0:
-            break
-
-    return {
-        "type": "playlist",
-        "id": playlist_id,
-        "title": _safe_text(
-            playlist.get("name"),
-            "Unknown Playlist",
-        ),
-        "description": _safe_text(
-            playlist.get("description")
-        ),
-        "owner": _safe_text(
-            (
-                playlist.get("owner")
-                or {}
-            ).get("display_name"),
-            "Unknown",
-        ),
-        "total_tracks": (
-            (
-                playlist.get("tracks")
-                or {}
-            ).get(
-                "total",
-                len(tracks),
-            )
-        ),
-        "tracks_loaded": len(tracks),
-        "image_url": _get_image_url(
-            playlist
-        ),
-        "tracks": tracks,
-        "spotify_url": (
-            (
-                playlist.get(
-                    "external_urls"
+            return [
+                item
+                for item in tracks
+                if isinstance(
+                    item,
+                    dict,
                 )
-                or {}
-            ).get("spotify")
-            or _spotify_url(
-                "playlist",
-                playlist_id,
+            ]
+
+        # tracks: {items: [...]}
+        if isinstance(
+            tracks,
+            dict,
+        ):
+
+            items = tracks.get(
+                "items"
             )
-        ),
-    }
+
+            if isinstance(
+                items,
+                list,
+            ):
+
+                return [
+                    item
+                    for item in items
+                    if isinstance(
+                        item,
+                        dict,
+                    )
+                ]
+
+        # items: [...]
+        items = candidate.get(
+            "items"
+        )
+
+        if isinstance(
+            items,
+            list,
+        ):
+
+            valid_items = [
+                item
+                for item in items
+                if isinstance(
+                    item,
+                    dict,
+                )
+            ]
+
+            if valid_items:
+                return valid_items
+
+    return []
 
 
 # ============================================================
-# UNIVERSAL SPOTIFY LOOKUP
+# NORMALIZATION
 # ============================================================
 
-def get_spotify_info(
-    url: str,
-    market: str = "IN",
-    max_playlist_tracks: int = 100,
+def normalize_track(
+    item: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    Detect a Spotify URL and retrieve its metadata.
-
-    Supported:
-        track
-        album
-        playlist
-
-    Example:
-        info = get_spotify_info(
-            "https://open.spotify.com/track/..."
-        )
+    Convert an API result into the bot's
+    internal Spotify track format.
     """
-    parsed = parse_spotify_url(url)
 
-    if not parsed:
-        raise ValueError(
-            "Unsupported Spotify URL."
-        )
-
-    resource_type, spotify_id = parsed
-
-    if resource_type == "track":
-        return get_track(
-            spotify_id,
-            market=market,
-        )
-
-    if resource_type == "album":
-        return get_album(
-            spotify_id,
-            market=market,
-        )
-
-    if resource_type == "playlist":
-        return get_playlist(
-            spotify_id,
-            market=market,
-            max_tracks=max_playlist_tracks,
-        )
-
-    raise ValueError(
-        f"Unsupported Spotify resource type: "
-        f"{resource_type}"
+    spotify_id = clean_text(
+        item.get("id")
+        or item.get("track_id")
+        or item.get("spotify_id")
     )
 
-
-# ============================================================
-# DISPLAY HELPERS
-# ============================================================
-
-def format_track_message(
-    track: dict[str, Any],
-) -> str:
-    """
-    Format a Spotify track for Telegram.
-    """
-    title = _safe_text(
-        track.get("title"),
+    title = clean_text(
+        item.get("title")
+        or item.get("name"),
         "Unknown Track",
     )
 
-    artist = _safe_text(
-        track.get("artist"),
-        "Unknown Artist",
+    artist = extract_artist(
+        item
     )
 
-    album = _safe_text(
-        track.get("album"),
-        "Unknown Album",
+    album_data = item.get(
+        "album"
     )
 
-    duration = _safe_text(
-        track.get("duration"),
-        "Unknown",
-    )
-
-    spotify_url = _safe_text(
-        track.get("spotify_url")
-    )
-
-    lines = [
-        f"🎵 <b>{title}</b>",
-        f"👤 {artist}",
-        f"💿 {album}",
-        f"⏱ {duration}",
-    ]
-
-    if spotify_url:
-        lines.append(
-            f'🔗 <a href="{spotify_url}">'
-            f"Open in Spotify</a>"
-        )
-
-    return "\n".join(lines)
-
-
-def format_album_message(
-    album: dict[str, Any],
-) -> str:
-    """
-    Format Spotify album metadata for Telegram.
-    """
-    title = _safe_text(
-        album.get("title"),
-        "Unknown Album",
-    )
-
-    artist = _safe_text(
-        album.get("artist"),
-        "Unknown Artist",
-    )
-
-    release_date = _safe_text(
-        album.get("release_date"),
-        "Unknown",
-    )
-
-    total_tracks = album.get(
-        "total_tracks",
-        0,
-    )
-
-    spotify_url = _safe_text(
-        album.get("spotify_url")
-    )
-
-    lines = [
-        f"💿 <b>{title}</b>",
-        f"👤 {artist}",
-        f"📅 {release_date}",
-        f"🎵 {total_tracks} tracks",
-    ]
-
-    if spotify_url:
-        lines.append(
-            f'🔗 <a href="{spotify_url}">'
-            f"Open in Spotify</a>"
-        )
-
-    return "\n".join(lines)
-
-
-def format_playlist_message(
-    playlist: dict[str, Any],
-) -> str:
-    """
-    Format Spotify playlist metadata for Telegram.
-    """
-    title = _safe_text(
-        playlist.get("title"),
-        "Unknown Playlist",
-    )
-
-    owner = _safe_text(
-        playlist.get("owner"),
-        "Unknown",
-    )
-
-    total_tracks = playlist.get(
-        "total_tracks",
-        0,
-    )
-
-    tracks_loaded = playlist.get(
-        "tracks_loaded",
-        0,
-    )
-
-    spotify_url = _safe_text(
-        playlist.get("spotify_url")
-    )
-
-    lines = [
-        f"📋 <b>{title}</b>",
-        f"👤 {owner}",
-        f"🎵 {total_tracks} tracks",
-        f"📥 Metadata loaded: {tracks_loaded}",
-    ]
-
-    if spotify_url:
-        lines.append(
-            f'🔗 <a href="{spotify_url}">'
-            f"Open in Spotify</a>"
-        )
-
-    return "\n".join(lines)
-
-
-# ============================================================
-# ERROR HANDLING
-# ============================================================
-
-def get_spotify_error_message(
-    error: Exception,
-) -> str:
-    """
-    Convert common Spotify errors into user-friendly
-    Telegram messages.
-    """
-    message = str(error).strip()
-
-    if not message:
-        message = "Unknown Spotify error."
-
-    lowered = message.lower()
-
-    if (
-        "401" in lowered
-        or "invalid client" in lowered
-        or "token" in lowered
+    if isinstance(
+        album_data,
+        dict,
     ):
-        return (
-            "❌ Spotify authentication failed.\n\n"
-            "Check SPOTIFY_CLIENT_ID and "
-            "SPOTIFY_CLIENT_SECRET."
+
+        album = clean_text(
+            album_data.get("name")
+            or album_data.get("title"),
+            "Unknown Album",
         )
 
-    if "403" in lowered:
-        return (
-            "❌ Spotify denied access to this resource.\n\n"
-            "The link may require user authorization "
-            "or may not be publicly accessible."
+    else:
+
+        album = clean_text(
+            album_data,
+            "Unknown Album",
         )
 
-    if "404" in lowered:
-        return (
-            "❌ Spotify item not found.\n\n"
-            "The track, album, or playlist may have "
-            "been removed or is unavailable."
+    duration = (
+        item.get("duration")
+        or item.get("duration_ms")
+        or item.get("length")
+    )
+
+    external_urls = item.get(
+        "external_urls"
+    )
+
+    spotify_url = ""
+
+    if isinstance(
+        external_urls,
+        dict,
+    ):
+
+        spotify_url = clean_text(
+            external_urls.get(
+                "spotify"
+            )
         )
 
-    if "429" in lowered:
-        return (
-            "⏳ Spotify rate limit reached.\n\n"
-            "Please try again shortly."
+    if not spotify_url and spotify_id:
+        spotify_url = build_spotify_url(
+            spotify_id
         )
 
-    return (
-        "❌ Unable to read this Spotify link.\n\n"
-        f"<code>{message[:300]}</code>"
+    return {
+        "id": spotify_id,
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "cover": extract_cover(
+            item
+        ),
+        "duration": format_duration(
+            duration
+        ),
+        "spotify_url": spotify_url,
+        "raw": item,
+    }
+
+
+# ============================================================
+# RAPIDAPI SEARCH
+# ============================================================
+
+def search_tracks(
+    query: str,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Search Spotify tracks using RapidAPI.
+
+    Parameters:
+
+        q
+        type=tracks
+        limit
+    """
+
+    if not RAPIDAPI_KEY:
+        raise RuntimeError(
+            "RAPIDAPI_KEY is not configured."
+        )
+
+    if not RAPIDAPI_HOST:
+        raise RuntimeError(
+            "RAPIDAPI_HOST is not configured."
+        )
+
+    query = clean_text(
+        query
+    )
+
+    if not query:
+        return []
+
+    if limit is None:
+        limit = SPOTIFY_SEARCH_LIMIT
+
+    limit = max(
+        1,
+        min(
+            int(limit),
+            SPOTIFY_MAX_RESULTS,
+        ),
+    )
+
+    params = {
+        "q": query,
+        "type": "tracks",
+        "limit": limit,
+    }
+
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": RAPIDAPI_HOST,
+    }
+
+    logger.info(
+        "Spotify search: %s",
+        query,
+    )
+
+    try:
+
+        response = requests.get(
+            SPOTIFY_SEARCH_URL,
+            params=params,
+            headers=headers,
+            timeout=SPOTIFY_TIMEOUT,
+        )
+
+    except requests.RequestException as exc:
+
+        logger.exception(
+            "Spotify API request failed."
+        )
+
+        raise RuntimeError(
+            "Unable to connect to the Spotify API."
+        ) from exc
+
+    # --------------------------------------------------------
+    # RATE LIMIT
+    # --------------------------------------------------------
+
+    if response.status_code == 429:
+
+        reset = response.headers.get(
+            "X-RateLimit-Reset"
+        )
+
+        if reset:
+            raise RuntimeError(
+                "Spotify API rate limit reached. "
+                f"Try again after {reset}."
+            )
+
+        raise RuntimeError(
+            "Spotify API rate limit reached. "
+            "Please try again later."
+        )
+
+    # --------------------------------------------------------
+    # AUTH
+    # --------------------------------------------------------
+
+    if response.status_code in (
+        401,
+        403,
+    ):
+
+        raise RuntimeError(
+            "RapidAPI authentication failed. "
+            "Check RAPIDAPI_KEY and your API subscription."
+        )
+
+    # --------------------------------------------------------
+    # NOT FOUND
+    # --------------------------------------------------------
+
+    if response.status_code == 404:
+
+        raise RuntimeError(
+            "Spotify Search endpoint was not found. "
+            "Check RAPIDAPI_HOST."
+        )
+
+    # --------------------------------------------------------
+    # OTHER ERRORS
+    # --------------------------------------------------------
+
+    if not response.ok:
+
+        body = response.text[:500]
+
+        raise RuntimeError(
+            "Spotify API error "
+            f"{response.status_code}: {body}"
+        )
+
+    # --------------------------------------------------------
+    # JSON
+    # --------------------------------------------------------
+
+    try:
+
+        payload = response.json()
+
+    except ValueError as exc:
+
+        raise RuntimeError(
+            "Spotify API returned invalid JSON."
+        ) from exc
+
+    # --------------------------------------------------------
+    # API SUCCESS FLAG
+    # --------------------------------------------------------
+
+    if isinstance(
+        payload,
+        dict,
+    ):
+
+        if payload.get(
+            "success"
+        ) is False:
+
+            error = payload.get(
+                "error"
+            )
+
+            raise RuntimeError(
+                clean_text(
+                    error,
+                    "Spotify API request failed.",
+                )
+            )
+
+    # --------------------------------------------------------
+    # RESULTS
+    # --------------------------------------------------------
+
+    items = find_track_items(
+        payload
+    )
+
+    return [
+        normalize_track(item)
+        for item in items[:limit]
+    ]
+
+
+# ============================================================
+# SEARCH FOR USER QUERY
+# ============================================================
+
+def search_spotify(
+    user_text: str,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """
+    Process a user Spotify request.
+
+    Example:
+
+        "Apna Bana Le - spotify"
+
+    Returns:
+
+        {
+            "query": "Apna Bana Le",
+            "results": [...],
+            "is_spotify": True
+        }
+    """
+
+    if not is_spotify_search(
+        user_text
+    ):
+
+        return {
+            "is_spotify": False,
+            "query": clean_text(
+                user_text
+            ),
+            "results": [],
+        }
+
+    query = clean_spotify_query(
+        user_text
+    )
+
+    # A direct Spotify URL currently gives
+    # us the Spotify ID, but the Search endpoint
+    # requires q text. We therefore don't pretend
+    # the URL itself is a search query.
+    if is_spotify_url(query):
+
+        return {
+            "is_spotify": True,
+            "is_url": True,
+            "query": "",
+            "spotify_url": query,
+            "track_id": extract_spotify_track_id(
+                query
+            ),
+            "results": [],
+        }
+
+    if not query:
+
+        return {
+            "is_spotify": True,
+            "is_url": False,
+            "query": "",
+            "results": [],
+        }
+
+    results = search_tracks(
+        query,
+        limit=limit,
+    )
+
+    return {
+        "is_spotify": True,
+        "is_url": False,
+        "query": query,
+        "results": results,
+    }
+
+
+# ============================================================
+# TELEGRAM RESULT FORMAT
+# ============================================================
+
+def format_result(
+    track: dict[str, Any],
+    number: int,
+) -> str:
+    """
+    Format one search result for Telegram.
+    """
+
+    title = escape_html(
+        track.get("title"),
+    )
+
+    artist = escape_html(
+        track.get("artist"),
+    )
+
+    album = escape_html(
+        track.get("album"),
+    )
+
+    duration = escape_html(
+        track.get("duration"),
+    )
+
+    lines = [
+        f"<b>{number}. {title}</b>",
+        f"👤 {artist}",
+    ]
+
+    if album:
+        lines.append(
+            f"💿 {album}"
+        )
+
+    if duration:
+        lines.append(
+            f"⏱ {duration}"
+        )
+
+    return "\n".join(
+        lines
+    )
+
+
+def format_search_results(
+    query: str,
+    results: list[dict[str, Any]],
+) -> str:
+    """
+    Format the complete Spotify search
+    result list for Telegram.
+    """
+
+    safe_query = escape_html(
+        query
+    )
+
+    if not results:
+
+        return (
+            "🔎 <b>Spotify Search</b>\n\n"
+            f"Query: <code>{safe_query}</code>\n\n"
+            "❌ No matching songs found."
+        )
+
+    lines = [
+        "🎵 <b>Spotify Search</b>",
+        "",
+        f"🔎 <code>{safe_query}</code>",
+        "",
+        "Select a song:",
+        "",
+    ]
+
+    for index, track in enumerate(
+        results,
+        start=1,
+    ):
+
+        lines.append(
+            format_result(
+                track,
+                index,
+            )
+        )
+
+        if index != len(results):
+            lines.append("")
+
+    return "\n".join(
+        lines
     )
 
 
 # ============================================================
-# MODULE STATUS
+# STATUS
 # ============================================================
 
 def spotify_status() -> dict[str, Any]:
     """
-    Return Spotify integration status.
+    Return safe integration status.
     """
+
     return {
-        "configured": is_spotify_configured(),
-        "client_id_present": bool(
-            SPOTIFY_CLIENT_ID
+        "configured": bool(
+            RAPIDAPI_KEY
         ),
-        "client_secret_present": bool(
-            SPOTIFY_CLIENT_SECRET
-        ),
-        "supported_types": [
-            "track",
-            "album",
-            "playlist",
-        ],
-        "audio_download": False,
+        "host": RAPIDAPI_HOST,
+        "search_url": SPOTIFY_SEARCH_URL,
+        "search_type": "tracks",
+        "search_limit": SPOTIFY_SEARCH_LIMIT,
     }
+
+
+# ============================================================
+# USER-FRIENDLY ERRORS
+# ============================================================
+
+def friendly_error(
+    error: Exception,
+) -> str:
+    """
+    Convert exceptions into Telegram-friendly messages.
+    """
+
+    message = clean_text(
+        error
+    )
+
+    lowered = message.lower()
+
+    if "rate limit" in lowered:
+
+        return (
+            "⏳ <b>Spotify search is temporarily "
+            "rate limited.</b>\n\n"
+            "Please try again shortly."
+        )
+
+    if (
+        "authentication" in lowered
+        or "rapidapi_key" in lowered
+    ):
+
+        return (
+            "❌ <b>Spotify API authentication failed.</b>\n\n"
+            "Check the RapidAPI key and subscription."
+        )
+
+    if "not found" in lowered:
+
+        return (
+            "❌ <b>Spotify Search API was not found.</b>\n\n"
+            "Check the configured RapidAPI host."
+        )
+
+    return (
+        "❌ <b>Spotify search failed.</b>\n\n"
+        f"<code>{escape_html(message[:400])}</code>"
+    )
