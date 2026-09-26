@@ -3,12 +3,17 @@ FROM python:3.13-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
+    HEALTH_PORT=8090 \
     PIP_NO_CACHE_DIR=1 \
     DENO_INSTALL=/root/.deno \
     PATH=/root/.deno/bin:$PATH \
     BGUTIL_HOME=/opt/bgutil
 
 WORKDIR /app
+
+# ============================================================
+# SYSTEM DEPENDENCIES
+# ============================================================
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -19,12 +24,25 @@ RUN apt-get update && \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# ============================================================
+# DENO
+# ============================================================
+
 RUN curl -fsSL https://deno.land/install.sh | sh && \
     deno upgrade --version 2.9.7 && \
     deno --version
 
+# ============================================================
+# PYTHON DEPENDENCIES
+# ============================================================
+
 COPY requirements.txt .
+
 RUN pip install --no-cache-dir -r requirements.txt
+
+# ============================================================
+# BGUTIL PO TOKEN PROVIDER
+# ============================================================
 
 RUN git clone \
         --single-branch \
@@ -39,6 +57,10 @@ RUN deno install \
         --allow-scripts=npm:canvas \
         --frozen
 
+# ============================================================
+# APPLICATION
+# ============================================================
+
 WORKDIR /app
 
 COPY bot.py .
@@ -51,10 +73,18 @@ RUN chmod +x /app/start.sh
 RUN mkdir -p /app/downloads && \
     chmod 755 /app/downloads
 
+# ============================================================
+# INTERNAL HEALTH CHECK
+# ============================================================
+
 HEALTHCHECK --interval=30s \
     --timeout=10s \
-    --start-period=45s \
+    --start-period=60s \
     --retries=3 \
-    CMD curl -f http://localhost:${PORT}/healthz || exit 1
+    CMD curl -f http://127.0.0.1:${HEALTH_PORT}/healthz || exit 1
+
+# ============================================================
+# START
+# ============================================================
 
 CMD ["/app/start.sh"]
