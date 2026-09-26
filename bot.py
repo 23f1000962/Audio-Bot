@@ -2,7 +2,11 @@ import os
 import re
 import asyncio
 import shutil
+import json
+import threading
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler
+from socketserver import ThreadingTCPServer
 
 from telegram import (
     Update,
@@ -10,6 +14,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -26,6 +31,7 @@ from downloader import (
     build_ydl_options,
     prepare_cookie_file,
 )
+
 from spotify import search_spotify
 
 
@@ -33,28 +39,44 @@ from spotify import search_spotify
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "2.4.0"
+BOT_VERSION = "2.4.1"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# Render's public web-service port.
+# Do NOT manually set PORT on Render.
 PORT = int(os.getenv("PORT", "8080"))
 
-# Render public URL
+# Internal health-check port.
+# This is separate from Telegram's webhook port.
+HEALTH_PORT = int(
+    os.getenv(
+        "HEALTH_PORT",
+        "8090",
+    )
+)
+
+# ------------------------------------------------------------
+# RENDER PUBLIC URL
+# ------------------------------------------------------------
+
 RENDER_EXTERNAL_URL = os.getenv(
     "RENDER_EXTERNAL_URL",
-    ""
+    "",
 ).rstrip("/")
 
-# Telegram webhook path
+# ------------------------------------------------------------
+# TELEGRAM WEBHOOK
+# ------------------------------------------------------------
+
 WEBHOOK_PATH = os.getenv(
     "WEBHOOK_PATH",
-    "telegram-webhook"
+    "telegram-webhook",
 ).strip("/")
 
-# Optional Telegram webhook secret
 WEBHOOK_SECRET = os.getenv(
     "WEBHOOK_SECRET",
-    ""
+    "",
 )
 
 if RENDER_EXTERNAL_URL:
@@ -64,6 +86,10 @@ if RENDER_EXTERNAL_URL:
 else:
     WEBHOOK_URL = ""
 
+
+# ============================================================
+# DOWNLOAD CONFIGURATION
+# ============================================================
 
 DOWNLOAD_DIR = Path(
     os.getenv(
@@ -129,6 +155,7 @@ SPOTIFY_URL_REGEX = re.compile(
 
 
 def is_youtube_url(url: str) -> bool:
+
     return bool(
         YOUTUBE_REGEX.match(
             (url or "").strip()
@@ -137,6 +164,7 @@ def is_youtube_url(url: str) -> bool:
 
 
 def parse_spotify_url(text: str):
+
     if not text:
         return None
 
@@ -234,6 +262,7 @@ def format_bytes(size):
 
     try:
         size = float(size)
+
     except (
         TypeError,
         ValueError,
@@ -263,6 +292,7 @@ def format_duration(seconds):
 
     try:
         seconds = int(seconds)
+
     except (
         TypeError,
         ValueError,
@@ -270,12 +300,15 @@ def format_duration(seconds):
         return None
 
     hours = seconds // 3600
+
     minutes = (
         seconds % 3600
     ) // 60
+
     secs = seconds % 60
 
     if hours:
+
         return (
             f"{hours}:"
             f"{minutes:02d}:"
@@ -308,6 +341,7 @@ async def delete_message(message):
 
     try:
         await message.delete()
+
     except Exception:
         pass
 
@@ -363,6 +397,7 @@ def build_youtube_search_query(
         and artist.lower()
         != "unknown artist"
     ):
+
         return (
             f"{title} {artist}"
         )
@@ -373,13 +408,6 @@ def build_youtube_search_query(
 def resolve_youtube_search(
     query: str,
 ):
-
-    """
-    Resolve a search query to a
-    YouTube URL.
-
-    No media is downloaded here.
-    """
 
     if not query:
 
@@ -701,6 +729,7 @@ async def progress_callback(
 
             try:
                 percent = float(percent)
+
             except (
                 TypeError,
                 ValueError,
@@ -920,7 +949,7 @@ async def handle_spotify_search(
                 return
 
         # ----------------------------------------------------
-        # Album / playlist / artist
+        # ALBUM / PLAYLIST / ARTIST
         # ----------------------------------------------------
 
         try:
@@ -951,15 +980,9 @@ async def handle_spotify_search(
             resource_title = ""
 
         labels = {
-
-            "album":
-                "💿 Spotify album",
-
-            "playlist":
-                "📋 Spotify playlist",
-
-            "artist":
-                "👤 Spotify artist",
+            "album": "💿 Spotify album",
+            "playlist": "📋 Spotify playlist",
+            "artist": "👤 Spotify artist",
         }
 
         label = labels.get(
@@ -1108,7 +1131,6 @@ async def handle_spotify_search(
             "🎵 *Spotify results*\n\n"
             f"Search: `{query[:100]}`\n\n"
             "Select the track you want:",
-
         )
 
         await status_message.edit_reply_markup(
@@ -1233,7 +1255,6 @@ async def spotify_callback(
         )
 
         youtube_url = await asyncio.to_thread(
-
             resolve_youtube_search,
             search_query,
         )
@@ -1709,11 +1730,8 @@ async def process_audio_download(
     except Exception as error:
 
         print(
-
             "Unexpected processing error:",
-
             type(error).__name__,
-
             str(error),
         )
 
@@ -1866,9 +1884,7 @@ async def handle_youtube_search(
         print(
 
             "YouTube search error:",
-
             type(error).__name__,
-
             str(error),
         )
 
@@ -2010,6 +2026,96 @@ async def error_handler(
 
 
 # ============================================================
+# INTERNAL HEALTH SERVER
+# ============================================================
+
+class HealthHandler(
+    BaseHTTPRequestHandler
+):
+
+    def do_GET(self):
+
+        if self.path in (
+            "/",
+            "/health",
+            "/healthz",
+        ):
+
+            body = json.dumps(
+                {
+                    "status": "ok",
+                    "service": "audio-bot",
+                    "version": BOT_VERSION,
+                    "engine": "yt-dlp + FFmpeg",
+                    "po_token_provider": "bgutil",
+                    "spotify_search": "rapidapi",
+                    "telegram_mode": "webhook",
+                }
+            ).encode("utf-8")
+
+            self.send_response(200)
+
+            self.send_header(
+                "Content-Type",
+                "application/json",
+            )
+
+            self.send_header(
+                "Content-Length",
+                str(len(body)),
+            )
+
+            self.end_headers()
+
+            self.wfile.write(body)
+
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(
+        self,
+        format,
+        *args,
+    ):
+
+        return
+
+
+class ReusableTCPServer(
+    ThreadingTCPServer
+):
+
+    allow_reuse_address = True
+
+
+def start_health_server():
+
+    server = ReusableTCPServer(
+        (
+            "127.0.0.1",
+            HEALTH_PORT,
+        ),
+        HealthHandler,
+    )
+
+    thread = threading.Thread(
+        target=server.serve_forever,
+        daemon=True,
+    )
+
+    thread.start()
+
+    print(
+        "Health server running on "
+        f"127.0.0.1:{HEALTH_PORT}"
+    )
+
+    return server
+
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -2029,7 +2135,23 @@ def main():
             "variable is missing."
         )
 
+    if not WEBHOOK_PATH:
+
+        raise RuntimeError(
+            "WEBHOOK_PATH cannot be empty."
+        )
+
     cleanup_download_directory()
+
+    # --------------------------------------------------------
+    # INTERNAL HEALTH SERVER
+    # --------------------------------------------------------
+
+    start_health_server()
+
+    # --------------------------------------------------------
+    # TELEGRAM APPLICATION
+    # --------------------------------------------------------
 
     application = (
         ApplicationBuilder()
@@ -2139,6 +2261,10 @@ def main():
         error_handler
     )
 
+    # --------------------------------------------------------
+    # STARTUP LOG
+    # --------------------------------------------------------
+
     print(
         "============================================"
     )
@@ -2183,7 +2309,11 @@ def main():
     )
 
     print(
-        f"🌐 Port: {PORT}"
+        f"🌐 Public port: {PORT}"
+    )
+
+    print(
+        f"❤️ Health port: {HEALTH_PORT}"
     )
 
     print(
@@ -2191,7 +2321,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # WEBHOOK
+    # TELEGRAM WEBHOOK
     # --------------------------------------------------------
 
     application.run_webhook(
