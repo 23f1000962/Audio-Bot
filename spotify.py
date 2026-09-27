@@ -733,12 +733,13 @@ def search_spotify(
 # yt-dlp authentication / PO-token configuration
 # ---------------------------------------------------------------------------
 
-def _find_cookie_file() -> str | None:
+def _find_cookie_source() -> Path | None:
     """
-    Find an existing cookies.txt without hard-coding a single deployment path.
+    Find the source cookies.txt.
 
-    Render Secret Files are normally mounted under /etc/secrets/.
-    The local/repository locations are included for local testing.
+    Render Secret Files are mounted read-only under /etc/secrets/.
+    yt-dlp may write/update a Netscape cookie jar when it exits, so the
+    source file must NOT be passed directly to yt-dlp on Render.
     """
     configured = os.getenv("YT_DLP_COOKIES") or os.getenv("COOKIES_FILE")
 
@@ -758,11 +759,72 @@ def _find_cookie_file() -> str | None:
     for path in candidates:
         try:
             if path.is_file() and path.stat().st_size > 0:
-                return str(path)
+                return path
         except OSError:
             continue
 
     return None
+
+
+def _find_cookie_file() -> str | None:
+    """
+    Return a writable copy of cookies.txt for yt-dlp.
+
+    Render's /etc/secrets filesystem is read-only. yt-dlp can attempt to
+    save the cookie jar when closing, which causes:
+        OSError: [Errno 30] Read-only file system
+
+    Therefore the cookie file is copied to /tmp before yt-dlp uses it.
+    """
+    source = _find_cookie_source()
+
+    if source is None:
+        return None
+
+    writable = Path("/tmp/audio-bot-cookies.txt")
+
+    try:
+        # Basic format check. A real Netscape cookie file normally starts
+        # with one of these headers. This also catches the common mistake
+        # of uploading .env contents as cookies.txt.
+        first_lines = source.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()[:5]
+
+        has_netscape_header = any(
+            line.strip().startswith("# Netscape HTTP Cookie File")
+            or line.strip().startswith("# HTTP Cookie File")
+            for line in first_lines
+        )
+
+        if not has_netscape_header:
+            logger.error(
+                "cookies.txt at %s does not look like a Netscape cookie "
+                "file. Make sure Render's cookies.txt Secret File contains "
+                "the exported browser cookies, NOT the .env file.",
+                source,
+            )
+            return None
+
+        writable.write_bytes(source.read_bytes())
+        os.chmod(writable, 0o600)
+
+        logger.info(
+            "Using writable yt-dlp cookie copy: %s (source: %s)",
+            writable,
+            source,
+        )
+
+        return str(writable)
+
+    except Exception as exc:
+        logger.warning(
+            "Could not prepare cookies.txt from %s: %s",
+            source,
+            exc,
+        )
+        return None
 
 
 def _ytdlp_common_args() -> list[str]:
@@ -1006,7 +1068,8 @@ def download_spotify_song(
                     "YouTube rejected the request as a bot/authentication "
                     "challenge. Make sure a fresh Netscape-format "
                     "cookies.txt is available at /etc/secrets/cookies.txt "
-                    "on Render. Original yt-dlp error:\n"
+                    "on Render. Do NOT put .env variables in cookies.txt. "
+                    "Original yt-dlp error:\n"
                     + message
                 )
 

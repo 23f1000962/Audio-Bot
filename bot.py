@@ -42,7 +42,7 @@ from spotify import (
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "3.0.0"
+BOT_VERSION = "3.1.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -148,10 +148,11 @@ YOUTUBE_REGEX = re.compile(
 
 
 SPOTIFY_URL_REGEX = re.compile(
-    r"https?://(?:open\.)?spotify\.com/"
+    r"(?:https?://(?:open\.)?spotify\.com/"
     r"(?:intl-[^/]+/)?"
     r"(track|album|playlist|artist)/"
-    r"([A-Za-z0-9]+)",
+    r"([A-Za-z0-9]+)"
+    r"|spotify:(track|album|playlist|artist):([A-Za-z0-9]+))",
     re.IGNORECASE,
 )
 
@@ -188,9 +189,22 @@ def parse_spotify_url(
     if not match:
         return None
 
+    resource_type = (
+        match.group(1)
+        or match.group(3)
+    )
+
+    resource_id = (
+        match.group(2)
+        or match.group(4)
+    )
+
+    if not resource_type or not resource_id:
+        return None
+
     return (
-        match.group(1).lower(),
-        match.group(2),
+        resource_type.lower(),
+        resource_id,
     )
 
 
@@ -677,19 +691,19 @@ async def help_command(
         "`Apna Bana Le`\n"
         "`Apna Bana Le Arijit Singh`\n\n"
 
-        "*Spotify Search*\n"
+        "*Spotify Request / Search*\n"
         "`Apna Bana Le spotify`\n"
         "`spotify Apna Bana Le`\n"
         "`Apna Bana Le - spotify`\n\n"
 
-        "Spotify search results come from the "
-        "Spotify API. Select a result and the "
-        "selected Spotify track is sent to the "
-        "Spotify downloader.\n\n"
+        "Spotify requests use public Spotify metadata "
+        "and are matched against YouTube Music. "
+        "No Spotify API is required.\n\n"
 
         "*Spotify Track URL*\n"
-        "A Spotify track URL is detected directly "
-        "and its track ID is sent to the downloader.\n\n"
+        "A Spotify track URL is detected directly. "
+        "Its metadata is resolved and the matching "
+        "YouTube Music track is downloaded.\n\n"
 
         "*Spotify Album / Playlist / Artist*\n"
         "These links are recognized, but this "
@@ -730,8 +744,8 @@ async def version_command(
         "🖼 Artwork: Metadata supported\n"
         "🏷 Metadata: Enabled\n"
         "🧹 Cleanup: Automatic\n"
-        "🔎 Spotify Search: API40\n"
-        "⬇️ Spotify Download: Downloader9\n"
+        "🔎 Spotify Search: YouTube Music\n"
+        "⬇️ Spotify Download: yt-dlp + FFmpeg\n"
         "▶️ YouTube: Search + Download\n\n"
 
         f"⚡ Concurrent downloads: "
@@ -896,7 +910,9 @@ async def handle_spotify_search(
             await process_spotify_download(
                 update=update,
                 context=context,
-                track_id=resource_id,
+                # Pass the full Spotify URL so spotify.py can resolve
+                # public Spotify metadata before searching YouTube Music.
+                track_id=original_text,
                 source_message=status_message,
                 track=None,
             )
@@ -958,7 +974,7 @@ async def handle_spotify_search(
     status_message = (
         await update.message.reply_text(
 
-            "🔎 *Searching Spotify...*\n\n"
+            "🔎 *Searching YouTube Music...*\n\n"
             f"🎵 `{query[:100]}`",
 
             parse_mode="Markdown",
@@ -993,7 +1009,7 @@ async def handle_spotify_search(
 
                 status_message,
 
-                "❌ *No Spotify results found.*\n\n"
+                "❌ *No matching YouTube Music results found.*\n\n"
 
                 "Try adding the artist name.\n\n"
 
@@ -1060,8 +1076,8 @@ async def handle_spotify_search(
 
             status_message,
 
-            "🎵 *Spotify results*\n\n"
-            "Select a track to download:",
+            "🎵 *YouTube Music results*\n\n"
+            "Matched for your Spotify request. Select a track:",
 
         )
 
@@ -1095,9 +1111,9 @@ async def handle_spotify_search(
 
             status_message,
 
-            "❌ *Spotify search failed.*\n\n"
+            "❌ *YouTube Music search failed.*\n\n"
 
-            "The Spotify API may be temporarily "
+            "The YouTube Music resolver may be temporarily "
             "unavailable. Please try again.",
         )
 
@@ -1266,7 +1282,7 @@ async def process_spotify_download(
 
                     status_message,
 
-                    "⬇️ *Downloading Spotify audio...*\n\n"
+                    "⬇️ *Downloading from YouTube Music...*\n\n"
                     f"🎵 {title_hint[:100]}",
                 )
 
@@ -1438,7 +1454,7 @@ async def process_spotify_download(
             )
 
         caption_parts.append(
-            "🔎 Source: Spotify"
+            "🔎 Source: YouTube Music (Spotify request)"
         )
 
         caption_parts.append(
@@ -1519,9 +1535,9 @@ async def process_spotify_download(
 
             status_message,
 
-            "❌ *Spotify download failed.*\n\n"
+            "❌ *Spotify request download failed.*\n\n"
 
-            "The Spotify download service may "
+            "The YouTube Music resolver may "
             "be temporarily unavailable.\n\n"
 
             "Please try again.",
@@ -2332,17 +2348,15 @@ def main():
     )
 
     print(
-        "🎵 Spotify Engine: API40 + Downloader9"
+        "🎵 Spotify Engine: YouTube Music"
     )
 
     print(
-        "🔎 Spotify Search: "
-        "spotify-api40.p.rapidapi.com"
+        "🔎 Spotify Resolver: Public metadata"
     )
 
     print(
-        "⬇️ Spotify Download: "
-        "spotify-downloader9.p.rapidapi.com"
+        "⬇️ Spotify Download: yt-dlp + FFmpeg"
     )
 
     print(
