@@ -5,9 +5,8 @@ import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv("/app/.env")
+load_dotenv("/etc/secrets/.env")
 load_dotenv()
-
 
 from telegram import (
     Update,
