@@ -1,17 +1,26 @@
 """
-Audio-Bot Spotify integration
-API: spotify-api40.p.rapidapi.com
+Audio-Bot Spotify integration.
 
-Supported:
-    GET /search
-    GET /track
+API 1:
+    spotify-api40.p.rapidapi.com
+    Used for Spotify search / metadata.
 
-Environment variables:
+API 2:
+    Spotify Downloader RapidAPI
+    Used ONLY for downloading the actual full-length audio.
+
+Required environment variables:
+
     SPOTIFY_API40_KEY
     SPOTIFY_API40_HOST
 
-Public functions used by bot.py:
+    SPOTIFY_RAPIDAPI_KEY
+    SPOTIFY_RAPIDAPI_HOST
+
+Current bot.py compatibility:
+
     search_spotify(query, limit=8)
+
     download_spotify_song(track_id, output_dir)
 """
 
@@ -33,27 +42,72 @@ import requests
 # CONFIGURATION
 # ============================================================
 
-SPOTIFY_API40_KEY = os.getenv("SPOTIFY_API40_KEY", "").strip()
+# ------------------------------------------------------------
+# API 1: spotify-api40
+# ------------------------------------------------------------
+
+SPOTIFY_API40_KEY = os.getenv(
+    "SPOTIFY_API40_KEY",
+    "",
+).strip()
 
 SPOTIFY_API40_HOST = os.getenv(
     "SPOTIFY_API40_HOST",
     "spotify-api40.p.rapidapi.com",
 ).strip()
 
-BASE_URL = f"https://{SPOTIFY_API40_HOST}"
+API40_BASE_URL = (
+    f"https://{SPOTIFY_API40_HOST}"
+)
 
-SEARCH_URL = f"{BASE_URL}/search"
-TRACK_URL = f"{BASE_URL}/track"
+API40_SEARCH_URL = (
+    f"{API40_BASE_URL}/search"
+)
+
+
+# ------------------------------------------------------------
+# API 2: Spotify Downloader
+# ------------------------------------------------------------
+
+SPOTIFY_RAPIDAPI_KEY = os.getenv(
+    "SPOTIFY_RAPIDAPI_KEY",
+    "",
+).strip()
+
+SPOTIFY_RAPIDAPI_HOST = os.getenv(
+    "SPOTIFY_RAPIDAPI_HOST",
+    "latest-spotify-downloader.p.rapidapi.com",
+).strip()
+
+DOWNLOADER_BASE_URL = (
+    f"https://{SPOTIFY_RAPIDAPI_HOST}"
+)
+
+DOWNLOADER_URL = (
+    f"{DOWNLOADER_BASE_URL}/downloadSong"
+)
+
+
+# ------------------------------------------------------------
+# Timeouts
+# ------------------------------------------------------------
 
 REQUEST_TIMEOUT = int(
-    os.getenv("SPOTIFY_API40_TIMEOUT", "60")
+    os.getenv(
+        "SPOTIFY_API40_TIMEOUT",
+        "60",
+    )
 )
 
 DOWNLOAD_TIMEOUT = int(
-    os.getenv("SPOTIFY_API40_DOWNLOAD_TIMEOUT", "300")
+    os.getenv(
+        "SPOTIFY_DOWNLOAD_TIMEOUT",
+        "300",
+    )
 )
 
-USER_AGENT = "Audio-Bot/3.0"
+
+USER_AGENT = "Audio-Bot/3.1"
 
 MAX_FILENAME_LENGTH = 180
 
@@ -64,20 +118,21 @@ MAX_FILENAME_LENGTH = 180
 
 
 class SpotifyError(Exception):
-    pass
+    """Base Spotify error."""
 
 
 class SpotifyAPIError(SpotifyError):
-    pass
+    """Spotify API error."""
 
 
 class SpotifyDownloadError(SpotifyError):
-    pass
+    """Spotify audio download error."""
 
 
 # ============================================================
 # HTTP SESSION
 # ============================================================
+
 
 session = requests.Session()
 
@@ -89,26 +144,13 @@ session.headers.update(
 )
 
 
-def _headers() -> dict[str, str]:
-    if not SPOTIFY_API40_KEY:
-        raise SpotifyAPIError(
-            "SPOTIFY_API40_KEY is not configured."
-        )
-
-    return {
-        "x-rapidapi-key": SPOTIFY_API40_KEY,
-        "x-rapidapi-host": SPOTIFY_API40_HOST,
-        "Accept": "application/json",
-        "User-Agent": USER_AGENT,
-    }
-
-
 # ============================================================
-# BASIC HELPERS
+# GENERAL HELPERS
 # ============================================================
 
 
 def _text(value: Any) -> str:
+
     if value is None:
         return ""
 
@@ -118,46 +160,78 @@ def _text(value: Any) -> str:
     return str(value).strip()
 
 
-def _is_url(value: Any) -> bool:
+def _is_http_url(
+    value: Any,
+) -> bool:
+
     if not isinstance(value, str):
         return False
 
     try:
+
         parsed = urlparse(value)
 
         return (
-            parsed.scheme in ("http", "https")
+            parsed.scheme
+            in ("http", "https")
             and bool(parsed.netloc)
         )
 
     except Exception:
+
         return False
 
 
-def _safe_json(response: requests.Response) -> Any:
-    try:
-        return response.json()
-    except Exception:
-        return None
-
-
-def _api_request(
-    url: str,
-    params: dict[str, Any],
-    timeout: int = REQUEST_TIMEOUT,
+def _safe_json(
+    response: requests.Response,
 ) -> Any:
 
     try:
+
+        return response.json()
+
+    except Exception:
+
+        return None
+
+
+def _request_api40(
+    params: dict[str, Any],
+) -> Any:
+
+    if not SPOTIFY_API40_KEY:
+
+        raise SpotifyAPIError(
+            "SPOTIFY_API40_KEY is not configured."
+        )
+
+    headers = {
+        "x-rapidapi-key":
+            SPOTIFY_API40_KEY,
+
+        "x-rapidapi-host":
+            SPOTIFY_API40_HOST,
+
+        "Accept":
+            "application/json",
+
+        "User-Agent":
+            USER_AGENT,
+    }
+
+    try:
+
         response = session.get(
-            url,
-            headers=_headers(),
+            API40_SEARCH_URL,
+            headers=headers,
             params=params,
-            timeout=timeout,
+            timeout=REQUEST_TIMEOUT,
         )
 
     except requests.RequestException as exc:
+
         raise SpotifyAPIError(
-            f"Spotify API request failed: {exc}"
+            f"Spotify search request failed: {exc}"
         ) from exc
 
     data = _safe_json(response)
@@ -167,6 +241,7 @@ def _api_request(
         message = ""
 
         if isinstance(data, dict):
+
             message = (
                 data.get("message")
                 or data.get("error")
@@ -175,6 +250,7 @@ def _api_request(
             )
 
         if not message:
+
             message = response.text[:500]
 
         raise SpotifyAPIError(
@@ -183,8 +259,83 @@ def _api_request(
         )
 
     if data is None:
+
         raise SpotifyAPIError(
             "Spotify API returned invalid JSON."
+        )
+
+    return data
+
+
+def _request_downloader(
+    track_id: str,
+) -> Any:
+
+    if not SPOTIFY_RAPIDAPI_KEY:
+
+        raise SpotifyDownloadError(
+            "SPOTIFY_RAPIDAPI_KEY is not configured."
+        )
+
+    headers = {
+        "x-rapidapi-key":
+            SPOTIFY_RAPIDAPI_KEY,
+
+        "x-rapidapi-host":
+            SPOTIFY_RAPIDAPI_HOST,
+
+        "Accept":
+            "application/json",
+
+        "User-Agent":
+            USER_AGENT,
+    }
+
+    try:
+
+        response = session.get(
+            DOWNLOADER_URL,
+            headers=headers,
+            params={
+                "songId": track_id,
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+
+    except requests.RequestException as exc:
+
+        raise SpotifyDownloadError(
+            f"Spotify downloader request failed: {exc}"
+        ) from exc
+
+    data = _safe_json(response)
+
+    if response.status_code >= 400:
+
+        message = ""
+
+        if isinstance(data, dict):
+
+            message = (
+                data.get("message")
+                or data.get("error")
+                or data.get("detail")
+                or ""
+            )
+
+        if not message:
+
+            message = response.text[:500]
+
+        raise SpotifyDownloadError(
+            f"Spotify downloader returned HTTP "
+            f"{response.status_code}: {message}"
+        )
+
+    if data is None:
+
+        raise SpotifyDownloadError(
+            "Spotify downloader returned invalid JSON."
         )
 
     return data
@@ -200,13 +351,14 @@ def _find_key_values(
     keys: set[str],
 ) -> list[Any]:
 
-    results: list[Any] = []
+    results = []
 
     if isinstance(obj, dict):
 
         for key, value in obj.items():
 
             if key in keys:
+
                 results.append(value)
 
             results.extend(
@@ -235,11 +387,9 @@ def _find_first(
     keys: tuple[str, ...],
 ) -> Any:
 
-    wanted = set(keys)
-
     values = _find_key_values(
         obj,
-        wanted,
+        set(keys),
     )
 
     for value in values:
@@ -250,18 +400,22 @@ def _find_first(
             [],
             {},
         ):
+
             return value
 
     return None
 
 
-def _all_urls(obj: Any) -> list[str]:
+def _find_all_urls(
+    obj: Any,
+) -> list[str]:
 
-    urls: list[str] = []
+    urls = []
 
     if isinstance(obj, str):
 
-        if _is_url(obj):
+        if _is_http_url(obj):
+
             urls.append(obj)
 
         return urls
@@ -269,22 +423,24 @@ def _all_urls(obj: Any) -> list[str]:
     if isinstance(obj, dict):
 
         for value in obj.values():
+
             urls.extend(
-                _all_urls(value)
+                _find_all_urls(value)
             )
 
     elif isinstance(obj, list):
 
         for item in obj:
+
             urls.extend(
-                _all_urls(item)
+                _find_all_urls(item)
             )
 
     return urls
 
 
 # ============================================================
-# SPOTIFY ID / URL HELPERS
+# SPOTIFY ID HELPERS
 # ============================================================
 
 
@@ -305,9 +461,11 @@ def extract_spotify_track_id(
     )
 
     if match:
+
         return match.group(1)
 
-    # open.spotify.com/track/ID
+
+    # https://open.spotify.com/track/ID
     match = re.search(
         r"open\.spotify\.com/track/([A-Za-z0-9]+)",
         value,
@@ -315,6 +473,7 @@ def extract_spotify_track_id(
     )
 
     if match:
+
         return match.group(1)
 
     return None
@@ -329,48 +488,28 @@ def _normalize_track_id(
     if not value:
         return ""
 
-    # Spotify URI
-    match = re.search(
-        r"spotify:track:([A-Za-z0-9]+)",
-        value,
-        re.IGNORECASE,
+    track_id = extract_spotify_track_id(
+        value
     )
 
-    if match:
-        return match.group(1)
-
-    # Spotify URL
-    track_id = extract_spotify_track_id(value)
-
     if track_id:
+
         return track_id
 
-    # Plain ID
+
+    # Plain Spotify ID
     if re.fullmatch(
         r"[A-Za-z0-9]{10,64}",
         value,
     ):
+
         return value
 
     return ""
 
 
-def is_spotify_url(text: str) -> bool:
-
-    if not text:
-        return False
-
-    return bool(
-        re.search(
-            r"https?://(?:open\.)?spotify\.com/",
-            text,
-            re.IGNORECASE,
-        )
-    )
-
-
 # ============================================================
-# TRACK OBJECT DETECTION
+# TRACK DETECTION
 # ============================================================
 
 
@@ -379,6 +518,7 @@ def _is_track_object(
 ) -> bool:
 
     if not isinstance(obj, dict):
+
         return False
 
     typename = _text(
@@ -393,18 +533,27 @@ def _is_track_object(
         obj.get("uri")
     ).lower()
 
-    # Most reliable checks.
+    # API40 / Spotify style.
     if typename == "track":
+
         return True
 
     if object_type == "track":
+
         return True
 
-    if uri.startswith("spotify:track:"):
+    if uri.startswith(
+        "spotify:track:"
+    ):
+
         return True
 
-    # Do NOT classify arbitrary objects containing "id"
-    # as tracks. This was the bug in the previous version.
+    # IMPORTANT:
+    #
+    # Do NOT simply check for "id".
+    #
+    # Albums also contain IDs.
+    #
     return False
 
 
@@ -412,17 +561,20 @@ def _find_track_objects(
     obj: Any,
 ) -> list[dict[str, Any]]:
 
-    tracks: list[dict[str, Any]] = []
+    tracks = []
 
     if isinstance(obj, dict):
 
         if _is_track_object(obj):
+
             tracks.append(obj)
 
         for value in obj.values():
 
             tracks.extend(
-                _find_track_objects(value)
+                _find_track_objects(
+                    value
+                )
             )
 
     elif isinstance(obj, list):
@@ -430,7 +582,9 @@ def _find_track_objects(
         for item in obj:
 
             tracks.extend(
-                _find_track_objects(item)
+                _find_track_objects(
+                    item
+                )
             )
 
     return tracks
@@ -445,8 +599,7 @@ def _extract_track_id(
     track: dict[str, Any],
 ) -> str:
 
-    # First use URI because it explicitly tells us that
-    # the object is a track.
+    # Prefer Spotify URI.
     uri = _text(
         track.get("uri")
     )
@@ -455,28 +608,29 @@ def _extract_track_id(
         "spotify:track:"
     ):
 
-        return _normalize_track_id(uri)
+        return _normalize_track_id(
+            uri
+        )
 
-    # Standard API style.
+
     for key in (
         "id",
         "trackId",
         "track_id",
     ):
 
-        value = track.get(key)
-
-        normalized = _normalize_track_id(
-            value
+        track_id = _normalize_track_id(
+            track.get(key)
         )
 
-        if normalized:
-            return normalized
+        if track_id:
+
+            return track_id
 
     return ""
 
 
-def _extract_name(
+def _extract_title(
     track: dict[str, Any],
 ) -> str:
 
@@ -489,23 +643,30 @@ def _extract_name(
 
         value = track.get(key)
 
-        if isinstance(value, str) and value.strip():
+        if isinstance(
+            value,
+            str,
+        ) and value.strip():
+
             return value.strip()
 
     return "Unknown Track"
 
 
-def _extract_artists(
+def _extract_artist(
     track: dict[str, Any],
 ) -> str:
+
+    names = []
 
     artists = track.get(
         "artists"
     )
 
-    names: list[str] = []
-
-    if isinstance(artists, list):
+    if isinstance(
+        artists,
+        list,
+    ):
 
         for artist in artists:
 
@@ -515,17 +676,18 @@ def _extract_artists(
             ):
                 continue
 
-            # Standard Spotify object.
-            name = artist.get("name")
+            name = artist.get(
+                "name"
+            )
 
             if name:
+
                 names.append(
                     _text(name)
                 )
+
                 continue
 
-            # API40 structure:
-            # artists -> profile -> name
             profile = artist.get(
                 "profile"
             )
@@ -540,15 +702,23 @@ def _extract_artists(
                 )
 
                 if name:
+
                     names.append(
                         _text(name)
                     )
 
-    elif isinstance(artists, dict):
 
-        name = artists.get("name")
+    elif isinstance(
+        artists,
+        dict,
+    ):
+
+        name = artists.get(
+            "name"
+        )
 
         if name:
+
             names.append(
                 _text(name)
             )
@@ -567,38 +737,11 @@ def _extract_artists(
             )
 
             if name:
+
                 names.append(
                     _text(name)
                 )
 
-    # API40 may expose artist directly.
-    if not names:
-
-        artist = track.get(
-            "artist"
-        )
-
-        if isinstance(
-            artist,
-            str,
-        ):
-            names.append(
-                artist.strip()
-            )
-
-        elif isinstance(
-            artist,
-            dict,
-        ):
-
-            name = artist.get(
-                "name"
-            )
-
-            if name:
-                names.append(
-                    _text(name)
-                )
 
     # Remove duplicates.
     unique = []
@@ -606,9 +749,13 @@ def _extract_artists(
     for name in names:
 
         if name and name not in unique:
+
             unique.append(name)
 
-    return ", ".join(unique) or "Unknown Artist"
+    return (
+        ", ".join(unique)
+        or "Unknown Artist"
+    )
 
 
 def _extract_album(
@@ -623,6 +770,7 @@ def _extract_album(
         album,
         str,
     ):
+
         return album
 
     if isinstance(
@@ -630,12 +778,11 @@ def _extract_album(
         dict,
     ):
 
-        name = album.get(
-            "name"
+        return _text(
+            album.get("name")
+            or album.get("title")
+            or ""
         )
-
-        if name:
-            return _text(name)
 
     return ""
 
@@ -651,16 +798,17 @@ def _extract_duration(
     )
 
     if value is None:
+
         return None
 
     try:
 
         value = float(value)
 
+        # Milliseconds → seconds.
         if value > 10000:
-            return int(
-                value / 1000
-            )
+
+            value /= 1000
 
         return int(value)
 
@@ -668,6 +816,7 @@ def _extract_duration(
         TypeError,
         ValueError,
     ):
+
         return None
 
 
@@ -675,7 +824,7 @@ def _extract_artwork(
     track: dict[str, Any],
 ) -> str | None:
 
-    # Standard Spotify structure.
+    # Standard Spotify images.
     album = track.get(
         "album"
     )
@@ -696,19 +845,29 @@ def _extract_artwork(
 
             for image in images:
 
-                if isinstance(
+                if not isinstance(
                     image,
                     dict,
                 ):
+                    continue
 
-                    url = image.get(
-                        "url"
-                    )
+                url = image.get(
+                    "url"
+                )
 
-                    if _is_url(url):
-                        return url
+                if _is_http_url(url):
 
-    # API40 coverArt structure.
+                    return url
+
+
+    # API40 structure:
+    #
+    # coverArt
+    #   sources
+    #      height
+    #      url
+    #      width
+    #
     cover_art = track.get(
         "coverArt"
     )
@@ -727,7 +886,6 @@ def _extract_artwork(
             list,
         ):
 
-            # Prefer largest image.
             candidates = []
 
             for source in sources:
@@ -742,17 +900,20 @@ def _extract_artwork(
                     "url"
                 )
 
-                if not _is_url(url):
+                if not _is_http_url(url):
                     continue
 
                 try:
+
                     width = int(
                         source.get(
                             "width",
                             0,
                         )
                     )
+
                 except Exception:
+
                     width = 0
 
                 candidates.append(
@@ -781,11 +942,11 @@ def _normalize_track(
         track
     )
 
-    name = _extract_name(
+    title = _extract_title(
         track
     )
 
-    artist = _extract_artists(
+    artist = _extract_artist(
         track
     )
 
@@ -803,44 +964,25 @@ def _normalize_track(
 
     spotify_url = ""
 
-    external_urls = track.get(
-        "external_urls"
+    uri = _text(
+        track.get("uri")
     )
 
-    if isinstance(
-        external_urls,
-        dict,
+    if uri.startswith(
+        "spotify:track:"
     ):
 
-        spotify_url = _text(
-            external_urls.get(
-                "spotify"
-            )
+        spotify_url = (
+            "https://open.spotify.com/track/"
+            + track_id
         )
-
-    if not spotify_url:
-
-        uri = _text(
-            track.get(
-                "uri"
-            )
-        )
-
-        if uri.startswith(
-            "spotify:track:"
-        ):
-
-            spotify_url = (
-                "https://open.spotify.com/track/"
-                + track_id
-            )
 
     return {
         "id": track_id,
         "track_id": track_id,
         "spotify_id": track_id,
-        "title": name,
-        "name": name,
+        "title": title,
+        "name": title,
         "artist": artist,
         "artists": artist,
         "album": album,
@@ -853,7 +995,7 @@ def _normalize_track(
 
 
 # ============================================================
-# SPOTIFY SEARCH
+# SEARCH
 # ============================================================
 
 
@@ -865,6 +1007,7 @@ def search_spotify(
     query = _text(query)
 
     if not query:
+
         return {
             "query": "",
             "results": [],
@@ -883,39 +1026,23 @@ def search_spotify(
         f"[Spotify] Searching: {query}"
     )
 
-    # API40 screenshot confirms /search uses:
-    #
-    # query = search query
-    #
-    # Unlike the standard Spotify Web API, do not add
-    # unsupported parameters such as type/offset/limit
-    # unless the RapidAPI product documents them.
-    data = _api_request(
-        SEARCH_URL,
+    data = _request_api40(
         {
             "query": query,
-        },
+        }
     )
 
     # --------------------------------------------------------
-    # CRITICAL:
-    # Only objects explicitly identified as Tracks.
-    #
-    # This prevents Album objects such as:
-    #
-    # __typename: "Album"
-    # uri: spotify:album:...
-    #
-    # from being passed to /track.
+    # ONLY TRACK OBJECTS
     # --------------------------------------------------------
 
     track_objects = _find_track_objects(
         data
     )
 
-    results: list[dict[str, Any]] = []
+    results = []
 
-    seen_ids: set[str] = set()
+    seen_ids = set()
 
     for track in track_objects:
 
@@ -942,29 +1069,33 @@ def search_spotify(
         )
 
         if len(results) >= limit:
+
             break
 
     print(
-        f"[Spotify] Found {len(results)} track(s)"
+        f"[Spotify] Found "
+        f"{len(results)} track(s)"
     )
 
     if not results:
 
         print(
-            "[Spotify] No Track objects found "
-            "in /search response."
+            "[Spotify] WARNING: "
+            "No Track objects were found."
         )
 
-        # Useful for debugging API schema changes.
         try:
+
             print(
                 json.dumps(
                     data,
                     ensure_ascii=False,
                     indent=2,
-                )[:8000]
+                )[:10000]
             )
+
         except Exception:
+
             pass
 
     return {
@@ -975,49 +1106,34 @@ def search_spotify(
 
 
 # ============================================================
-# AUDIO URL EXTRACTION
+# OLD DOWNLOADER RESPONSE PARSER
 # ============================================================
 
 
-AUDIO_KEYS = {
+DOWNLOAD_URL_KEYS = (
+    "url",
     "downloadUrl",
     "download_url",
     "download",
-    "downloadLink",
-    "download_link",
-
     "audioUrl",
     "audio_url",
     "audio",
-    "audioLink",
-    "audio_link",
-
-    "mediaUrl",
-    "media_url",
-    "media",
-
-    "streamUrl",
-    "stream_url",
-    "stream",
-
+    "audioDownloadUrl",
+    "audio_download_url",
     "fileUrl",
     "file_url",
     "file",
-
-    "playUrl",
-    "play_url",
-
-    "playbackUrl",
-    "playback_url",
-
-    "url",
-    "href",
+    "mediaUrl",
+    "media_url",
+    "streamUrl",
+    "stream_url",
+    "stream",
     "link",
-    "src",
-}
+    "href",
+)
 
 
-def _audio_score(
+def _score_download_url(
     url: str,
 ) -> int:
 
@@ -1033,44 +1149,45 @@ def _audio_score(
         ".opus",
         ".wav",
         ".flac",
-        ".webm",
-        "audio",
         "download",
+        "audio",
         "media",
-        "stream",
         "cdn",
+        "stream",
     ):
 
         if token in lower:
+
             score += 10
 
-    # Never mistake Spotify metadata/image URLs
-    # for downloadable audio.
-    if "open.spotify.com" in lower:
+    # Never select Spotify page/image URLs.
+    if (
+        "open.spotify.com"
+        in lower
+    ):
+
         score -= 100
 
-    if "i.scdn.co" in lower:
-        score -= 100
+    if (
+        "i.scdn.co"
+        in lower
+    ):
 
-    if "/image/" in lower:
         score -= 100
 
     return score
 
 
-def _find_audio_url(
+def _find_download_url(
     data: Any,
 ) -> str | None:
 
-    candidates: list[str] = []
+    candidates = []
 
-    # --------------------------------------------------------
-    # First inspect explicit audio-related keys.
-    # --------------------------------------------------------
-
+    # Explicit download-related keys.
     values = _find_key_values(
         data,
-        AUDIO_KEYS,
+        set(DOWNLOAD_URL_KEYS),
     )
 
     for value in values:
@@ -1080,7 +1197,8 @@ def _find_audio_url(
             str,
         ):
 
-            if _is_url(value):
+            if _is_http_url(value):
+
                 candidates.append(
                     value
                 )
@@ -1090,63 +1208,53 @@ def _find_audio_url(
             dict,
         ):
 
-            for url in _all_urls(
-                value
-            ):
-
-                candidates.append(
-                    url
-                )
+            candidates.extend(
+                _find_all_urls(value)
+            )
 
         elif isinstance(
             value,
             list,
         ):
 
-            for url in _all_urls(
-                value
-            ):
+            candidates.extend(
+                _find_all_urls(value)
+            )
 
-                candidates.append(
-                    url
-                )
-
-    # --------------------------------------------------------
-    # Also scan every URL in response.
-    # --------------------------------------------------------
-
+    # Fallback: all URLs in response.
     candidates.extend(
-        _all_urls(data)
+        _find_all_urls(data)
     )
 
-    # Deduplicate.
-    unique: list[str] = []
+    # Remove duplicates.
+    unique = []
 
     for url in candidates:
 
         if url not in unique:
+
             unique.append(url)
 
     if not unique:
+
         return None
 
     unique.sort(
-        key=_audio_score,
+        key=_score_download_url,
         reverse=True,
     )
 
     for url in unique:
 
-        if _audio_score(url) <= -50:
-            continue
+        if _score_download_url(url) > -50:
 
-        return url
+            return url
 
     return None
 
 
 # ============================================================
-# FILE HELPERS
+# DOWNLOAD FILE
 # ============================================================
 
 
@@ -1157,6 +1265,7 @@ def _safe_filename(
     value = _text(value)
 
     if not value:
+
         value = "spotify_audio"
 
     value = re.sub(
@@ -1176,11 +1285,18 @@ def _safe_filename(
     )
 
     if len(value) > MAX_FILENAME_LENGTH:
-        value = value[
-            :MAX_FILENAME_LENGTH
-        ].rstrip()
 
-    return value or "spotify_audio"
+        value = (
+            value[
+                :MAX_FILENAME_LENGTH
+            ]
+            .rstrip()
+        )
+
+    return (
+        value
+        or "spotify_audio"
+    )
 
 
 def _extension_from_url(
@@ -1189,21 +1305,19 @@ def _extension_from_url(
 
     try:
 
-        path = urlparse(
-            url
-        ).path
-
         extension = Path(
-            path
+            urlparse(url).path
         ).suffix.lower()
 
         if re.fullmatch(
             r"\.[a-z0-9]{1,8}",
             extension,
         ):
+
             return extension
 
     except Exception:
+
         pass
 
     return ""
@@ -1241,39 +1355,7 @@ def _extension_from_content_type(
     )
 
 
-def _create_job_dir(
-    output_dir: str | Path,
-    track_id: str,
-) -> Path:
-
-    output_dir = Path(
-        output_dir
-    )
-
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    job_dir = (
-        output_dir
-        / f"spotify_{track_id}_{int(time.time() * 1000)}"
-    )
-
-    job_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    return job_dir
-
-
-# ============================================================
-# FILE DOWNLOAD
-# ============================================================
-
-
-def _download_audio(
+def _download_file(
     url: str,
     destination: Path,
 ) -> str:
@@ -1287,8 +1369,10 @@ def _download_audio(
         with session.get(
             url,
             headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "*/*",
+                "User-Agent":
+                    USER_AGENT,
+                "Accept":
+                    "*/*",
             },
             stream=True,
             timeout=DOWNLOAD_TIMEOUT,
@@ -1297,18 +1381,15 @@ def _download_audio(
 
             response.raise_for_status()
 
-            content_type = response.headers.get(
-                "Content-Type",
-                "",
-            )
-
-            content_length = response.headers.get(
-                "Content-Length",
-                "",
+            content_type = (
+                response.headers.get(
+                    "Content-Type",
+                    "",
+                )
             )
 
             print(
-                "[Spotify] Download HTTP:",
+                "[Spotify] Audio HTTP:",
                 response.status_code,
             )
 
@@ -1316,12 +1397,6 @@ def _download_audio(
                 "[Spotify] Content-Type:",
                 content_type,
             )
-
-            if content_length:
-                print(
-                    "[Spotify] Content-Length:",
-                    content_length,
-                )
 
             with open(
                 temporary,
@@ -1333,18 +1408,24 @@ def _download_audio(
                 ):
 
                     if chunk:
+
                         file.write(
                             chunk
                         )
 
         if not temporary.exists():
+
             raise SpotifyDownloadError(
-                "Downloaded file does not exist."
+                "Spotify audio file was not created."
             )
 
-        if temporary.stat().st_size <= 0:
+        if (
+            temporary.stat().st_size
+            <= 0
+        ):
+
             raise SpotifyDownloadError(
-                "Downloaded file is empty."
+                "Spotify audio file is empty."
             )
 
         temporary.replace(
@@ -1356,19 +1437,22 @@ def _download_audio(
     except requests.RequestException as exc:
 
         try:
+
             temporary.unlink(
                 missing_ok=True
             )
+
         except Exception:
+
             pass
 
         raise SpotifyDownloadError(
-            f"Audio download failed: {exc}"
+            f"Spotify audio download failed: {exc}"
         ) from exc
 
 
 # ============================================================
-# MAIN SPOTIFY DOWNLOAD
+# MAIN DOWNLOAD FUNCTION
 # ============================================================
 
 
@@ -1377,221 +1461,49 @@ def download_spotify_song(
     output_dir: str | Path,
 ) -> dict[str, Any]:
 
-    normalized_id = _normalize_track_id(
-        track_id
+    normalized_id = (
+        _normalize_track_id(
+            track_id
+        )
     )
 
     if not normalized_id:
+
         raise SpotifyDownloadError(
             "Invalid Spotify track ID."
         )
 
     print(
-        "[Spotify] Downloading track:",
-        normalized_id,
-    )
-
-    spotify_url = (
-        "https://open.spotify.com/track/"
-        + normalized_id
+        "[Spotify] Full-track downloader:"
+        f" {normalized_id}"
     )
 
     # ========================================================
-    # IMPORTANT
+    # IMPORTANT:
     #
-    # API40 documents both:
+    # We DO NOT use API40 /track for audio.
     #
-    #   /track?id=...
-    #   /track?url=...
-    #
-    # We try URL first because it explicitly identifies
-    # the resource as a Spotify TRACK.
+    # The old downloader API is responsible for the
+    # actual full-length audio.
     # ========================================================
 
-    data = None
-
-    try:
-
-        print(
-            "[Spotify] Trying /track with URL..."
-        )
-
-        data = _api_request(
-            TRACK_URL,
-            {
-                "url": spotify_url,
-            },
-        )
-
-    except SpotifyAPIError as first_error:
-
-        print(
-            "[Spotify] URL lookup failed:",
-            first_error,
-        )
-
-        print(
-            "[Spotify] Falling back to track ID..."
-        )
-
-        data = _api_request(
-            TRACK_URL,
-            {
-                "id": normalized_id,
-            },
-        )
-
-    # ========================================================
-    # API success check
-    # ========================================================
-
-    if isinstance(
-        data,
-        dict,
-    ):
-
-        if data.get(
-            "success"
-        ) is False:
-
-            message = (
-                data.get("message")
-                or data.get("error")
-                or "Spotify /track failed."
-            )
-
-            raise SpotifyDownloadError(
-                _text(message)
-            )
-
-    # ========================================================
-    # Find the actual Track object
-    # ========================================================
-
-    track_objects = _find_track_objects(
-        data
+    data = _request_downloader(
+        normalized_id
     )
 
-    track_object = (
-        track_objects[0]
-        if track_objects
-        else {}
-    )
+    # --------------------------------------------------------
+    # Find audio URL
+    # --------------------------------------------------------
 
-    # ========================================================
-    # Metadata
-    # ========================================================
-
-    if track_object:
-
-        title = _extract_name(
-            track_object
-        )
-
-        artist = _extract_artists(
-            track_object
-        )
-
-        album = _extract_album(
-            track_object
-        )
-
-        duration = _extract_duration(
-            track_object
-        )
-
-        artwork = _extract_artwork(
-            track_object
-        )
-
-    else:
-
-        # Fallback for APIs where /track wraps metadata
-        # differently.
-        title = _text(
-            _find_first(
-                data,
-                (
-                    "title",
-                    "name",
-                    "trackName",
-                    "track_name",
-                ),
-            )
-        )
-
-        artist_value = _find_first(
-            data,
-            (
-                "artist",
-                "artists",
-                "artistName",
-                "artist_name",
-            ),
-        )
-
-        artist = _text(
-            artist_value
-        )
-
-        album = _text(
-            _find_first(
-                data,
-                (
-                    "album",
-                    "albumName",
-                    "album_name",
-                ),
-            )
-        )
-
-        duration_value = _find_first(
-            data,
-            (
-                "duration_ms",
-                "durationMs",
-                "duration",
-            ),
-        )
-
-        try:
-
-            duration = int(
-                float(duration_value)
-            )
-
-            if duration > 10000:
-                duration //= 1000
-
-        except Exception:
-            duration = None
-
-        artwork = None
-
-    if not title:
-        title = (
-            f"Spotify Track {normalized_id}"
-        )
-
-    if not artist:
-        artist = "Unknown Artist"
-
-    # ========================================================
-    # Extract actual audio URL
-    # ========================================================
-
-    audio_url = _find_audio_url(
+    audio_url = _find_download_url(
         data
     )
 
     if not audio_url:
 
         print(
-            "[Spotify] No audio URL found."
-        )
-
-        print(
-            "[Spotify] /track response:"
+            "[Spotify] Downloader returned "
+            "no usable audio URL."
         )
 
         try:
@@ -1605,20 +1517,88 @@ def download_spotify_song(
             )
 
         except Exception:
+
             print(data)
 
         raise SpotifyDownloadError(
-            "Spotify /track response did not "
-            "contain a usable audio URL."
+            "Spotify downloader returned "
+            "no usable audio URL."
         )
 
     print(
-        "[Spotify] Audio URL found."
+        "[Spotify] Full audio URL received."
     )
 
-    # ========================================================
-    # Quality
-    # ========================================================
+    # --------------------------------------------------------
+    # Metadata
+    # --------------------------------------------------------
+
+    title = _text(
+        _find_first(
+            data,
+            (
+                "title",
+                "name",
+                "trackName",
+                "track_name",
+                "songName",
+                "song_name",
+            ),
+        )
+    )
+
+    artist = _text(
+        _find_first(
+            data,
+            (
+                "artist",
+                "artistName",
+                "artist_name",
+                "performer",
+                "author",
+            ),
+        )
+    )
+
+    album = _text(
+        _find_first(
+            data,
+            (
+                "album",
+                "albumName",
+                "album_name",
+            ),
+        )
+    )
+
+    duration = _find_first(
+        data,
+        (
+            "duration",
+            "duration_ms",
+            "durationMs",
+        ),
+    )
+
+    try:
+
+        if duration is not None:
+
+            duration = float(
+                duration
+            )
+
+            if duration > 10000:
+
+                duration /= 1000
+
+            duration = int(
+                duration
+            )
+
+    except Exception:
+
+        duration = None
 
     quality = _text(
         _find_first(
@@ -1634,20 +1614,49 @@ def download_spotify_song(
         )
     )
 
-    # ========================================================
-    # Job directory
-    # ========================================================
+    if not title:
 
-    job_dir = _create_job_dir(
-        output_dir,
-        normalized_id,
+        title = (
+            f"Spotify Track "
+            f"{normalized_id}"
+        )
+
+    if not artist:
+
+        artist = "Unknown Artist"
+
+    # --------------------------------------------------------
+    # Job directory
+    # --------------------------------------------------------
+
+    output_dir = Path(
+        output_dir
     )
 
-    # ========================================================
-    # Filename
-    # ========================================================
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    filename_base = _safe_filename(
+    job_dir = (
+        output_dir
+        / (
+            f"spotify_"
+            f"{normalized_id}_"
+            f"{int(time.time() * 1000)}"
+        )
+    )
+
+    job_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # --------------------------------------------------------
+    # Filename
+    # --------------------------------------------------------
+
+    base_name = _safe_filename(
         f"{artist} - {title}"
     )
 
@@ -1656,66 +1665,72 @@ def download_spotify_song(
     )
 
     if not extension:
+
         extension = ".audio"
 
     output_path = (
         job_dir
-        / f"{filename_base}{extension}"
+        / f"{base_name}{extension}"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # Download
-    # ========================================================
+    # --------------------------------------------------------
 
-    content_type = _download_audio(
+    content_type = _download_file(
         audio_url,
         output_path,
     )
 
-    # ========================================================
-    # Correct extension if needed
-    # ========================================================
+    # --------------------------------------------------------
+    # Correct extension
+    # --------------------------------------------------------
 
     if output_path.suffix == ".audio":
 
-        content_extension = (
+        extension = (
             _extension_from_content_type(
                 content_type
             )
         )
 
-        if content_extension:
+        if extension:
 
             corrected_path = (
                 job_dir
-                / f"{filename_base}"
-                f"{content_extension}"
+                / f"{base_name}{extension}"
             )
 
             output_path.replace(
                 corrected_path
             )
 
-            output_path = corrected_path
+            output_path = (
+                corrected_path
+            )
 
-    # ========================================================
+    # --------------------------------------------------------
     # Validate
-    # ========================================================
+    # --------------------------------------------------------
 
     if not output_path.exists():
+
         raise SpotifyDownloadError(
             "Spotify audio file was not created."
         )
 
-    file_size = output_path.stat().st_size
+    file_size = (
+        output_path.stat().st_size
+    )
 
     if file_size <= 0:
+
         raise SpotifyDownloadError(
             "Spotify audio file is empty."
         )
 
     print(
-        "[Spotify] Download complete:"
+        "[Spotify] Full audio download complete:"
     )
 
     print(
@@ -1730,17 +1745,39 @@ def download_spotify_song(
     )
 
     return {
-        "path": str(output_path),
-        "filename": output_path.name,
-        "title": title,
-        "artist": artist,
-        "album": album,
-        "duration": duration,
-        "quality": quality,
-        "artwork": artwork,
-        "job_dir": str(job_dir),
-        "source": "spotify",
-        "spotify_id": normalized_id,
+        "path": str(
+            output_path
+        ),
+
+        "filename":
+            output_path.name,
+
+        "title":
+            title,
+
+        "artist":
+            artist,
+
+        "album":
+            album,
+
+        "duration":
+            duration,
+
+        "quality":
+            quality,
+
+        "artwork":
+            None,
+
+        "job_dir":
+            str(job_dir),
+
+        "source":
+            "spotify",
+
+        "spotify_id":
+            normalized_id,
     }
 
 
@@ -1754,6 +1791,7 @@ def cleanup_spotify_job(
 ) -> None:
 
     if not result:
+
         return
 
     job_dir = result.get(
@@ -1761,6 +1799,7 @@ def cleanup_spotify_job(
     )
 
     if not job_dir:
+
         return
 
     try:
@@ -1784,7 +1823,7 @@ def cleanup_spotify_job(
 
 
 # ============================================================
-# CONFIG CHECK
+# CONFIGURATION CHECK
 # ============================================================
 
 
@@ -1792,35 +1831,49 @@ def spotify_configured() -> bool:
 
     return bool(
         SPOTIFY_API40_KEY
-        and SPOTIFY_API40_HOST
+        and SPOTIFY_RAPIDAPI_KEY
     )
 
 
 # ============================================================
-# LOCAL TEST
+# LOCAL DIAGNOSTIC
 # ============================================================
 
 
 if __name__ == "__main__":
 
     print(
-        "===================================="
+        "========================================"
     )
 
     print(
-        "Spotify API40 configuration"
+        "Audio Bot Spotify Configuration"
     )
 
     print(
-        "Host:",
+        "API40 Host:",
         SPOTIFY_API40_HOST,
     )
 
     print(
-        "Key configured:",
-        bool(SPOTIFY_API40_KEY),
+        "API40 Key:",
+        "configured"
+        if SPOTIFY_API40_KEY
+        else "MISSING",
     )
 
     print(
-        "===================================="
+        "Downloader Host:",
+        SPOTIFY_RAPIDAPI_HOST,
+    )
+
+    print(
+        "Downloader Key:",
+        "configured"
+        if SPOTIFY_RAPIDAPI_KEY
+        else "MISSING",
+    )
+
+    print(
+        "========================================"
     )
