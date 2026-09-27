@@ -1,5 +1,7 @@
 # Environment variables and secrets
 .env
+*.pyc
+downloads/
 
 # YouTube authentication cookies
 cookies.txt
