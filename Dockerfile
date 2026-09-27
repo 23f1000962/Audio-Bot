@@ -3,7 +3,6 @@ FROM python:3.13-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
-    HEALTH_PORT=8090 \
     PIP_NO_CACHE_DIR=1 \
     DENO_INSTALL=/root/.deno \
     PATH=/root/.deno/bin:$PATH \
@@ -24,6 +23,7 @@ RUN apt-get update && \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
+
 # ============================================================
 # DENO
 # ============================================================
@@ -32,6 +32,7 @@ RUN curl -fsSL https://deno.land/install.sh | sh && \
     deno upgrade --version 2.9.7 && \
     deno --version
 
+
 # ============================================================
 # PYTHON DEPENDENCIES
 # ============================================================
@@ -39,6 +40,7 @@ RUN curl -fsSL https://deno.land/install.sh | sh && \
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
+
 
 # ============================================================
 # BGUTIL PO TOKEN PROVIDER
@@ -57,6 +59,7 @@ RUN deno install \
         --allow-scripts=npm:canvas \
         --frozen
 
+
 # ============================================================
 # APPLICATION
 # ============================================================
@@ -70,18 +73,28 @@ COPY start.sh .
 
 RUN chmod +x /app/start.sh
 
+
+# ============================================================
+# DOWNLOAD DIRECTORY
+# ============================================================
+
 RUN mkdir -p /app/downloads && \
     chmod 755 /app/downloads
 
+
 # ============================================================
-# INTERNAL HEALTH CHECK
+# CONTAINER HEALTH CHECK
 # ============================================================
+
+# This only verifies that the container's main process is alive.
+# Render itself uses the public $PORT for its service health check.
 
 HEALTHCHECK --interval=30s \
     --timeout=10s \
     --start-period=60s \
     --retries=3 \
-    CMD curl -f http://127.0.0.1:${HEALTH_PORT}/healthz || exit 1
+    CMD curl -f http://127.0.0.1:${PORT}/ || exit 1
+
 
 # ============================================================
 # START
