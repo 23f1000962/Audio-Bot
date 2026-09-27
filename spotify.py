@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 import requests
 from dotenv import load_dotenv
 
+load_dotenv("/app/.env")
 load_dotenv()
 
 
