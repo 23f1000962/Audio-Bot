@@ -615,32 +615,32 @@ async def start(
 
     await update.message.reply_text(
 
-        "🎵 *Audio Bot*\\n\\n"
+        "🎵 *Audio Bot*\n\n"
 
         "Send me a YouTube or YouTube Music "
-        "link and I'll convert it to audio.\\n\\n"
+        "link and I'll convert it to audio.\n\n"
 
         "You can also search by sending a "
-        "song name.\\n\\n"
+        "song name.\n\n"
 
-        "✨ *Supported*\\n"
-        "• YouTube\\n"
-        "• YouTube Music\\n"
-        "• YouTube Shorts\\n"
-        "• YouTube search\\n"
-        "• Spotify search\\n"
-        "• Spotify track URLs\\n"
-        "• Metadata\\n"
-        "• Automatic cleanup\\n\\n"
+        "✨ *Supported*\n"
+        "• YouTube\n"
+        "• YouTube Music\n"
+        "• YouTube Shorts\n"
+        "• YouTube search\n"
+        "• Spotify search\n"
+        "• Spotify track URLs\n"
+        "• Metadata\n"
+        "• Automatic cleanup\n\n"
 
-        "🎧 *Spotify examples*\\n"
-        "`Apna Bana Le spotify`\\n"
-        "`spotify Apna Bana Le`\\n"
-        "`Apna Bana Le - spotify`\\n\\n"
+        "🎧 *Spotify examples*\n"
+        "`Apna Bana Le spotify`\n"
+        "`spotify Apna Bana Le`\n"
+        "`Apna Bana Le - spotify`\n\n"
 
-        "🔎 *YouTube examples*\\n"
-        "`Apna Bana Le`\\n"
-        "`Apna Bana Le Arijit Singh`\\n\\n"
+        "🔎 *YouTube examples*\n"
+        "`Apna Bana Le`\n"
+        "`Apna Bana Le Arijit Singh`\n\n"
 
         f"🤖 Audio Bot v{BOT_VERSION}",
 
@@ -662,45 +662,45 @@ async def help_command(
 
     await update.message.reply_text(
 
-        "🎵 *Audio Bot Help*\\n\\n"
+        "🎵 *Audio Bot Help*\n\n"
 
-        "*YouTube URL*\\n"
-        "`https://youtube.com/watch?v=...`\\n\\n"
+        "*YouTube URL*\n"
+        "`https://youtube.com/watch?v=...`\n\n"
 
-        "*YouTube Music*\\n"
-        "`https://music.youtube.com/watch?v=...`\\n\\n"
+        "*YouTube Music*\n"
+        "`https://music.youtube.com/watch?v=...`\n\n"
 
-        "*YouTube Shorts*\\n"
-        "`https://youtube.com/shorts/...`\\n\\n"
+        "*YouTube Shorts*\n"
+        "`https://youtube.com/shorts/...`\n\n"
 
-        "*YouTube Search*\\n"
-        "`Apna Bana Le`\\n"
-        "`Apna Bana Le Arijit Singh`\\n\\n"
+        "*YouTube Search*\n"
+        "`Apna Bana Le`\n"
+        "`Apna Bana Le Arijit Singh`\n\n"
 
-        "*Spotify Search*\\n"
-        "`Apna Bana Le spotify`\\n"
-        "`spotify Apna Bana Le`\\n"
-        "`Apna Bana Le - spotify`\\n\\n"
+        "*Spotify Search*\n"
+        "`Apna Bana Le spotify`\n"
+        "`spotify Apna Bana Le`\n"
+        "`Apna Bana Le - spotify`\n\n"
 
         "Spotify search results come from the "
         "Spotify API. Select a result and the "
         "selected Spotify track is sent to the "
-        "Spotify downloader.\\n\\n"
+        "Spotify downloader.\n\n"
 
-        "*Spotify Track URL*\\n"
+        "*Spotify Track URL*\n"
         "A Spotify track URL is detected directly "
-        "and its track ID is sent to the downloader.\\n\\n"
+        "and its track ID is sent to the downloader.\n\n"
 
-        "*Spotify Album / Playlist / Artist*\\n"
+        "*Spotify Album / Playlist / Artist*\n"
         "These links are recognized, but this "
-        "version downloads individual tracks.\\n\\n"
+        "version downloads individual tracks.\n\n"
 
-        "🎧 Output: audio\\n"
-        "🏷 Metadata: Enabled\\n"
-        "🧹 Cleanup: Automatic\\n\\n"
+        "🎧 Output: audio\n"
+        "🏷 Metadata: Enabled\n"
+        "🧹 Cleanup: Automatic\n\n"
 
         "⚠️ Only download content you have "
-        "permission to download.\\n\\n"
+        "permission to download.\n\n"
 
         f"🤖 Version {BOT_VERSION}",
 
@@ -722,17 +722,17 @@ async def version_command(
 
     await update.message.reply_text(
 
-        f"🤖 *Audio Bot v{BOT_VERSION}*\\n\\n"
+        f"🤖 *Audio Bot v{BOT_VERSION}*\n\n"
 
-        "🎧 YouTube: yt-dlp + FFmpeg\\n"
-        "🔐 PO Tokens: BGUTIL\\n"
-        "🎵 Output: MP3\\n"
-        "🖼 Artwork: Metadata supported\\n"
-        "🏷 Metadata: Enabled\\n"
-        "🧹 Cleanup: Automatic\\n"
-        "🔎 Spotify Search: API40\\n"
-        "⬇️ Spotify Download: Downloader9\\n"
-        "▶️ YouTube: Search + Download\\n\\n"
+        "🎧 YouTube: yt-dlp + FFmpeg\n"
+        "🔐 PO Tokens: BGUTIL\n"
+        "🎵 Output: MP3\n"
+        "🖼 Artwork: Metadata supported\n"
+        "🏷 Metadata: Enabled\n"
+        "🧹 Cleanup: Automatic\n"
+        "🔎 Spotify Search: API40\n"
+        "⬇️ Spotify Download: Downloader9\n"
+        "▶️ YouTube: Search + Download\n\n"
 
         f"⚡ Concurrent downloads: "
         f"{MAX_CONCURRENT_DOWNLOADS}",
@@ -755,14 +755,14 @@ async def greeting(
 
     await update.message.reply_text(
 
-        "👋 *Hey! I'm ready.*\\n\\n"
+        "👋 *Hey! I'm ready.*\n\n"
 
         "🎵 Send a YouTube or YouTube Music "
-        "link to download audio.\\n\\n"
+        "link to download audio.\n\n"
 
-        "🔎 Or simply type a song name.\\n\\n"
+        "🔎 Or simply type a song name.\n\n"
 
-        "🎧 For Spotify search, type:\\n"
+        "🎧 For Spotify search, type:\n"
         "`Song Name spotify`",
 
         parse_mode="Markdown",
@@ -825,16 +825,16 @@ async def progress_callback(
             )
 
             text = (
-                f"🎵 *{status}*\\n\\n"
+                f"🎵 *{status}*\n\n"
                 f"`{bar}` "
-                f"{percent:.0f}%\\n\\n"
+                f"{percent:.0f}%\n\n"
                 f"🤖 v{BOT_VERSION}"
             )
 
         else:
 
             text = (
-                f"⏳ *{status}...*\\n\\n"
+                f"⏳ *{status}...*\n\n"
                 f"🤖 v{BOT_VERSION}"
             )
 
@@ -886,7 +886,7 @@ async def handle_spotify_search(
             status_message = (
                 await update.message.reply_text(
 
-                    "🎵 *Spotify track detected*\\n\\n"
+                    "🎵 *Spotify track detected*\n\n"
                     "⬇️ Preparing download...",
 
                     parse_mode="Markdown",
@@ -920,13 +920,13 @@ async def handle_spotify_search(
 
         await update.message.reply_text(
 
-            f"{label} detected.\\n\\n"
+            f"{label} detected.\n\n"
 
             "This version supports individual "
-            "Spotify track downloads.\\n\\n"
+            "Spotify track downloads.\n\n"
 
             "Send a Spotify track URL or search "
-            "for the song using:\\n"
+            "for the song using:\n"
             "`Song Name spotify`",
 
             parse_mode="Markdown",
@@ -946,8 +946,8 @@ async def handle_spotify_search(
 
         await update.message.reply_text(
 
-            "❌ *Spotify search query is empty.*\\n\\n"
-            "Example:\\n"
+            "❌ *Spotify search query is empty.*\n\n"
+            "Example:\n"
             "`Apna Bana Le spotify`",
 
             parse_mode="Markdown",
@@ -958,7 +958,7 @@ async def handle_spotify_search(
     status_message = (
         await update.message.reply_text(
 
-            "🔎 *Searching Spotify...*\\n\\n"
+            "🔎 *Searching Spotify...*\n\n"
             f"🎵 `{query[:100]}`",
 
             parse_mode="Markdown",
@@ -993,11 +993,11 @@ async def handle_spotify_search(
 
                 status_message,
 
-                "❌ *No Spotify results found.*\\n\\n"
+                "❌ *No Spotify results found.*\n\n"
 
-                "Try adding the artist name.\\n\\n"
+                "Try adding the artist name.\n\n"
 
-                "Example:\\n"
+                "Example:\n"
                 "`Apna Bana Le Arijit Singh spotify`",
             )
 
@@ -1060,7 +1060,7 @@ async def handle_spotify_search(
 
             status_message,
 
-            "🎵 *Spotify results*\\n\\n"
+            "🎵 *Spotify results*\n\n"
             "Select a track to download:",
 
         )
@@ -1095,7 +1095,7 @@ async def handle_spotify_search(
 
             status_message,
 
-            "❌ *Spotify search failed.*\\n\\n"
+            "❌ *Spotify search failed.*\n\n"
 
             "The Spotify API may be temporarily "
             "unavailable. Please try again.",
@@ -1167,7 +1167,7 @@ async def spotify_callback(
             query.message,
 
             "❌ *This Spotify selection "
-            "has expired.*\\n\\n"
+            "has expired.*\n\n"
             "Please search again.",
         )
 
@@ -1237,7 +1237,7 @@ async def process_spotify_download(
 
                 status_message,
 
-                "⏳ *You're in the queue...*\\n\\n"
+                "⏳ *You're in the queue...*\n\n"
                 "Another download is currently "
                 "being processed.",
             )
@@ -1266,7 +1266,7 @@ async def process_spotify_download(
 
                     status_message,
 
-                    "⬇️ *Downloading Spotify audio...*\\n\\n"
+                    "⬇️ *Downloading Spotify audio...*\n\n"
                     f"🎵 {title_hint[:100]}",
                 )
 
@@ -1276,7 +1276,7 @@ async def process_spotify_download(
 
                     status_message,
 
-                    "⬇️ *Downloading Spotify audio...*\\n\\n"
+                    "⬇️ *Downloading Spotify audio...*\n\n"
                     "Please wait...",
                 )
 
@@ -1397,10 +1397,10 @@ async def process_spotify_download(
 
             status_message,
 
-            "📤 *Uploading audio...*\\n\\n"
+            "📤 *Uploading audio...*\n\n"
 
-            f"🎵 {str(title)[:100]}\\n"
-            f"👤 {str(artist)[:80]}\\n"
+            f"🎵 {str(title)[:100]}\n"
+            f"👤 {str(artist)[:80]}\n"
             f"📦 {format_bytes(file_size)}",
         )
 
@@ -1491,10 +1491,10 @@ async def process_spotify_download(
 
             status_message,
 
-            "✅ *Spotify download complete!*\\n\\n"
+            "✅ *Spotify download complete!*\n\n"
 
-            f"🎵 {str(title)[:100]}\\n"
-            f"👤 {str(artist)[:80]}\\n"
+            f"🎵 {str(title)[:100]}\n"
+            f"👤 {str(artist)[:80]}\n"
             f"📦 {format_bytes(file_size)}",
         )
 
@@ -1519,10 +1519,10 @@ async def process_spotify_download(
 
             status_message,
 
-            "❌ *Spotify download failed.*\\n\\n"
+            "❌ *Spotify download failed.*\n\n"
 
             "The Spotify download service may "
-            "be temporarily unavailable.\\n\\n"
+            "be temporarily unavailable.\n\n"
 
             "Please try again.",
         )
@@ -1585,9 +1585,9 @@ async def process_youtube_download(
 
                 status_message,
 
-                "⏳ *You're in the queue...*\\n\\n"
+                "⏳ *You're in the queue...*\n\n"
                 "Another download is currently "
-                "being processed.\\n\\n"
+                "being processed.\n\n"
                 "I'll start yours automatically.",
             )
 
@@ -1601,7 +1601,7 @@ async def process_youtube_download(
 
                 status_message,
 
-                "⬇️ *Downloading from YouTube...*\\n\\n"
+                "⬇️ *Downloading from YouTube...*\n\n"
                 "⚙️ Processing with yt-dlp + FFmpeg...",
             )
 
@@ -1693,10 +1693,10 @@ async def process_youtube_download(
 
             status_message,
 
-            "📤 *Uploading audio...*\\n\\n"
+            "📤 *Uploading audio...*\n\n"
 
-            f"🎵 {str(title)[:100]}\\n"
-            f"📦 {format_bytes(file_size)}\\n"
+            f"🎵 {str(title)[:100]}\n"
+            f"📦 {format_bytes(file_size)}\n"
             f"🎧 {str(quality)[:100]}",
         )
 
@@ -1784,10 +1784,10 @@ async def process_youtube_download(
 
             status_message,
 
-            "✅ *YouTube download complete!*\\n\\n"
+            "✅ *YouTube download complete!*\n\n"
 
-            f"🎵 {str(title)[:100]}\\n"
-            f"📦 {format_bytes(file_size)}\\n"
+            f"🎵 {str(title)[:100]}\n"
+            f"📦 {format_bytes(file_size)}\n"
             f"🎧 {str(quality)[:100]}",
         )
 
@@ -1813,14 +1813,14 @@ async def process_youtube_download(
         if "private" in lowered:
 
             message = (
-                "🔒 *Private video*\\n\\n"
+                "🔒 *Private video*\n\n"
                 "This video is private or unavailable."
             )
 
         elif "age" in lowered:
 
             message = (
-                "🔞 *Age-restricted video*\\n\\n"
+                "🔞 *Age-restricted video*\n\n"
                 "This video requires access that "
                 "the bot cannot provide."
             )
@@ -1832,9 +1832,9 @@ async def process_youtube_download(
         ):
 
             message = (
-                "⏳ *YouTube is temporarily busy*\\n\\n"
+                "⏳ *YouTube is temporarily busy*\n\n"
                 "YouTube is rate-limiting this "
-                "server right now.\\n\\n"
+                "server right now.\n\n"
                 "Please try again later."
             )
 
@@ -1844,7 +1844,7 @@ async def process_youtube_download(
         ):
 
             message = (
-                "🛡️ *YouTube verification required*\\n\\n"
+                "🛡️ *YouTube verification required*\n\n"
                 "YouTube is currently requiring "
                 "additional verification."
             )
@@ -1853,14 +1853,14 @@ async def process_youtube_download(
 
             message = (
                 "⚠️ *YouTube temporarily rejected "
-                "the request.*\\n\\n"
+                "the request.*\n\n"
                 "Please try again later."
             )
 
         elif "too large" in lowered:
 
             message = (
-                "📦 *File too large*\\n\\n"
+                "📦 *File too large*\n\n"
                 "The resulting audio file is too large "
                 "for the configured Telegram upload."
             )
@@ -1868,7 +1868,7 @@ async def process_youtube_download(
         else:
 
             message = (
-                "❌ *YouTube download failed.*\\n\\n"
+                "❌ *YouTube download failed.*\n\n"
                 "The video may be unavailable, "
                 "restricted, unsupported, or "
                 "temporarily blocked."
@@ -1889,7 +1889,7 @@ async def process_youtube_download(
 
             status_message,
 
-            "⏱️ *YouTube download timed out.*\\n\\n"
+            "⏱️ *YouTube download timed out.*\n\n"
             "Please try again.",
         )
 
@@ -1905,7 +1905,7 @@ async def process_youtube_download(
 
             status_message,
 
-            "❌ *Something went wrong.*\\n\\n"
+            "❌ *Something went wrong.*\n\n"
             "Please try the link again later.",
         )
 
@@ -1952,7 +1952,7 @@ async def handle_youtube_link(
     status_message = (
         await update.message.reply_text(
 
-            "🔍 *Analyzing YouTube link...*\\n\\n"
+            "🔍 *Analyzing YouTube link...*\n\n"
             "Please wait...",
 
             parse_mode="Markdown",
@@ -1992,7 +1992,7 @@ async def handle_youtube_search(
     status_message = (
         await update.message.reply_text(
 
-            "🔎 *Searching YouTube...*\\n\\n"
+            "🔎 *Searching YouTube...*\n\n"
             f"🎵 `{query[:100]}`",
 
             parse_mode="Markdown",
@@ -2024,7 +2024,7 @@ async def handle_youtube_search(
 
             status_message,
 
-            "❌ *No suitable YouTube result found.*\\n\\n"
+            "❌ *No suitable YouTube result found.*\n\n"
             "Try adding the artist name.",
         )
 
@@ -2040,7 +2040,7 @@ async def handle_youtube_search(
 
             status_message,
 
-            "❌ *YouTube search failed.*\\n\\n"
+            "❌ *YouTube search failed.*\n\n"
             "Please try again.",
         )
 
