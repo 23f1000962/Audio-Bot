@@ -41,6 +41,8 @@ from ytmusicapi import YTMusic
 
 logger = logging.getLogger(__name__)
 
+SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-1.0"
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -728,17 +730,108 @@ def search_spotify(
 
 
 # ---------------------------------------------------------------------------
+# yt-dlp authentication / PO-token configuration
+# ---------------------------------------------------------------------------
+
+def _find_cookie_file() -> str | None:
+    """
+    Find an existing cookies.txt without hard-coding a single deployment path.
+
+    Render Secret Files are normally mounted under /etc/secrets/.
+    The local/repository locations are included for local testing.
+    """
+    configured = os.getenv("YT_DLP_COOKIES") or os.getenv("COOKIES_FILE")
+
+    candidates = []
+
+    if configured:
+        candidates.append(Path(configured))
+
+    candidates.extend(
+        [
+            Path("/etc/secrets/cookies.txt"),
+            Path("/app/cookies.txt"),
+            Path("cookies.txt"),
+        ]
+    )
+
+    for path in candidates:
+        try:
+            if path.is_file() and path.stat().st_size > 0:
+                return str(path)
+        except OSError:
+            continue
+
+    return None
+
+
+def _ytdlp_common_args() -> list[str]:
+    """
+    Arguments shared by metadata and download calls.
+
+    BGUTIL is already installed in this project and its HTTP provider is
+    running on 127.0.0.1:4416 from start.sh. The explicit extractor argument
+    makes the connection unambiguous.
+
+    A cookies.txt is added automatically when present.
+    """
+    args = [
+        "--no-playlist",
+        "--no-warnings",
+        "--extractor-args",
+        "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+    ]
+
+    cookie_file = _find_cookie_file()
+
+    if cookie_file:
+        logger.info("Using yt-dlp cookies file: %s", cookie_file)
+        args.extend(["--cookies", cookie_file])
+    else:
+        logger.warning(
+            "No cookies.txt found. YouTube may reject the download "
+            "with a bot/authentication challenge."
+        )
+
+    return args
+
+
+def _check_ytdlp() -> None:
+    try:
+        process = subprocess.run(
+            ["yt-dlp", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+
+        if process.returncode != 0:
+            raise RuntimeError(
+                process.stderr.strip() or "yt-dlp is unavailable."
+            )
+
+        logger.info("yt-dlp version: %s", process.stdout.strip())
+
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "yt-dlp is not installed or is not available in PATH."
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
 # Exact YouTube Music metadata
 # ---------------------------------------------------------------------------
 
 def _get_ytdlp_metadata(video_id: str) -> dict[str, Any]:
     url = f"https://music.youtube.com/watch?v={video_id}"
 
+    _check_ytdlp()
+
     command = [
         "yt-dlp",
-        "--no-playlist",
+        *_ytdlp_common_args(),
         "--skip-download",
-        "--no-warnings",
         "--dump-single-json",
         url,
     ]
@@ -857,10 +950,11 @@ def download_spotify_song(
 
     output_template = str(job_dir / f"{base_name}.%(ext)s")
 
+    _check_ytdlp()
+
     command = [
         "yt-dlp",
-        "--no-playlist",
-        "--no-warnings",
+        *_ytdlp_common_args(),
         "--newline",
         "--no-check-certificates",
         "--format",
@@ -896,11 +990,27 @@ def download_spotify_song(
         if process.returncode != 0:
             error = process.stderr.strip() or process.stdout.strip()
 
-            raise RuntimeError(
+            message = (
                 error[-3000:]
                 if error
                 else "yt-dlp failed to download the audio."
             )
+
+            if (
+                "Sign in to confirm" in message
+                or "not a bot" in message
+                or "cookies-from-browser" in message
+                or "cookies" in message.lower()
+            ):
+                message = (
+                    "YouTube rejected the request as a bot/authentication "
+                    "challenge. Make sure a fresh Netscape-format "
+                    "cookies.txt is available at /etc/secrets/cookies.txt "
+                    "on Render. Original yt-dlp error:\n"
+                    + message
+                )
+
+            raise RuntimeError(message)
 
         audio_files = [
             path
