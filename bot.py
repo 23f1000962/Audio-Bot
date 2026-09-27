@@ -2,11 +2,7 @@ import os
 import re
 import asyncio
 import shutil
-import json
-import threading
 from pathlib import Path
-from http.server import BaseHTTPRequestHandler
-from socketserver import ThreadingTCPServer
 
 from telegram import (
     Update,
@@ -39,22 +35,13 @@ from spotify import search_spotify
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "2.4.1"
+BOT_VERSION = "2.4.2"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Render's public web-service port.
 # Do NOT manually set PORT on Render.
 PORT = int(os.getenv("PORT", "8080"))
-
-# Internal health-check port.
-# This is separate from Telegram's webhook port.
-HEALTH_PORT = int(
-    os.getenv(
-        "HEALTH_PORT",
-        "8090",
-    )
-)
 
 # ------------------------------------------------------------
 # RENDER PUBLIC URL
@@ -896,7 +883,6 @@ async def handle_spotify_search(
                 )
 
                 await process_audio_download(
-
                     update=update,
                     context=context,
                     original_url=youtube_url,
@@ -1037,7 +1023,6 @@ async def handle_spotify_search(
 
             "🔎 *Searching Spotify...*\n\n"
             f"🎵 `{query[:100]}`",
-
             parse_mode="Markdown",
         )
     )
@@ -1270,7 +1255,6 @@ async def spotify_callback(
         )
 
         await process_audio_download(
-
             update=update,
             context=context,
             original_url=youtube_url,
@@ -2026,96 +2010,6 @@ async def error_handler(
 
 
 # ============================================================
-# INTERNAL HEALTH SERVER
-# ============================================================
-
-class HealthHandler(
-    BaseHTTPRequestHandler
-):
-
-    def do_GET(self):
-
-        if self.path in (
-            "/",
-            "/health",
-            "/healthz",
-        ):
-
-            body = json.dumps(
-                {
-                    "status": "ok",
-                    "service": "audio-bot",
-                    "version": BOT_VERSION,
-                    "engine": "yt-dlp + FFmpeg",
-                    "po_token_provider": "bgutil",
-                    "spotify_search": "rapidapi",
-                    "telegram_mode": "webhook",
-                }
-            ).encode("utf-8")
-
-            self.send_response(200)
-
-            self.send_header(
-                "Content-Type",
-                "application/json",
-            )
-
-            self.send_header(
-                "Content-Length",
-                str(len(body)),
-            )
-
-            self.end_headers()
-
-            self.wfile.write(body)
-
-            return
-
-        self.send_response(404)
-        self.end_headers()
-
-    def log_message(
-        self,
-        format,
-        *args,
-    ):
-
-        return
-
-
-class ReusableTCPServer(
-    ThreadingTCPServer
-):
-
-    allow_reuse_address = True
-
-
-def start_health_server():
-
-    server = ReusableTCPServer(
-        (
-            "127.0.0.1",
-            HEALTH_PORT,
-        ),
-        HealthHandler,
-    )
-
-    thread = threading.Thread(
-        target=server.serve_forever,
-        daemon=True,
-    )
-
-    thread.start()
-
-    print(
-        "Health server running on "
-        f"127.0.0.1:{HEALTH_PORT}"
-    )
-
-    return server
-
-
-# ============================================================
 # MAIN
 # ============================================================
 
@@ -2142,12 +2036,6 @@ def main():
         )
 
     cleanup_download_directory()
-
-    # --------------------------------------------------------
-    # INTERNAL HEALTH SERVER
-    # --------------------------------------------------------
-
-    start_health_server()
 
     # --------------------------------------------------------
     # TELEGRAM APPLICATION
@@ -2313,10 +2201,6 @@ def main():
     )
 
     print(
-        f"❤️ Health port: {HEALTH_PORT}"
-    )
-
-    print(
         "============================================"
     )
 
@@ -2340,7 +2224,9 @@ def main():
             else None
         ),
 
-        drop_pending_updates=True,
+        # Keep pending Telegram updates when
+        # Render wakes from its Free-tier sleep.
+        drop_pending_updates=False,
 
         allowed_updates=Update.ALL_TYPES,
     )
