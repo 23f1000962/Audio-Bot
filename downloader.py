@@ -110,24 +110,97 @@ RUNTIME_COOKIE_FILE = Path(
 )
 
 
-def cookies_available() -> bool:
+def _is_valid_cookie_file(path: Path) -> bool:
+
+    """
+    Validate a Netscape/Mozilla-format yt-dlp cookie jar.
+
+    This rejects accidental .env files and Render environment-variable
+    content before yt-dlp can parse it.
+    """
 
     try:
 
-        return (
-            COOKIE_FILE.exists()
-            and COOKIE_FILE.is_file()
-            and COOKIE_FILE.stat().st_size > 0
+        if (
+            not path.exists()
+            or not path.is_file()
+            or path.stat().st_size <= 0
+        ):
+
+            return False
+
+        lines = path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()
+
+        header_found = any(
+
+            line.strip().startswith(
+                "# Netscape HTTP Cookie File"
+            )
+
+            or line.strip().startswith(
+                "# HTTP Cookie File"
+            )
+
+            for line in lines[:20]
         )
 
-    except Exception:
+        if not header_found:
+
+            return False
+
+        for line in lines:
+
+            line = line.strip()
+
+            if not line or line.startswith("#"):
+
+                continue
+
+            # Netscape cookies have seven TAB-separated fields.
+            if len(line.split("\t")) != 7:
+
+                return False
+
+        return True
+
+    except (
+        OSError,
+        UnicodeError,
+    ):
 
         return False
 
 
+def cookies_available() -> bool:
+
+    return _is_valid_cookie_file(
+        COOKIE_FILE
+    )
+
+
 def prepare_cookie_file() -> bool:
 
+    # Remove a stale runtime copy first when the source is missing or
+    # malformed. This prevents an old invalid cookie jar from being reused.
     if not cookies_available():
+
+        try:
+
+            if RUNTIME_COOKIE_FILE.exists():
+
+                RUNTIME_COOKIE_FILE.unlink()
+
+        except OSError:
+
+            pass
+
+        print(
+            "YouTube cookies: missing or INVALID "
+            "(expected Netscape-format cookies.txt)"
+        )
 
         return False
 
@@ -154,8 +227,27 @@ def prepare_cookie_file() -> bool:
 
             pass
 
+        if not _is_valid_cookie_file(
+            RUNTIME_COOKIE_FILE
+        ):
+
+            try:
+
+                RUNTIME_COOKIE_FILE.unlink()
+
+            except OSError:
+
+                pass
+
+            print(
+                "YouTube cookies: runtime copy "
+                "failed validation"
+            )
+
+            return False
+
         print(
-            "YouTube cookies: available "
+            "YouTube cookies: valid "
             "(copied to writable runtime file)"
         )
 
@@ -168,15 +260,43 @@ def prepare_cookie_file() -> bool:
             f"runtime copy: {type(error).__name__}"
         )
 
+        try:
+
+            if RUNTIME_COOKIE_FILE.exists():
+
+                RUNTIME_COOKIE_FILE.unlink()
+
+        except OSError:
+
+            pass
+
         return False
 
 
 def verify_cookie_file():
 
-    if cookies_available():
+    if _is_valid_cookie_file(
+        COOKIE_FILE
+    ):
 
         print(
-            "YouTube cookies: available"
+            "YouTube cookies: valid"
+        )
+
+    elif COOKIE_FILE.exists():
+
+        print(
+            "YouTube cookies: INVALID"
+        )
+
+        print(
+            "Expected a Netscape-format cookie "
+            f"file: {COOKIE_FILE}"
+        )
+
+        print(
+            "Do NOT put Render environment variables "
+            "inside cookies.txt."
         )
 
     else:
@@ -986,6 +1106,7 @@ def build_ydl_options(
     output_dir: Path,
     progress_tracker: ProgressTracker,
     player_client: str,
+    embed_thumbnail: bool = True,
 ):
 
     output_template = str(
@@ -1125,13 +1246,36 @@ def build_ydl_options(
     # COOKIES
     # ========================================================
 
-    if RUNTIME_COOKIE_FILE.exists():
+    if not embed_thumbnail:
+
+        options["postprocessors"] = [
+
+            processor
+
+            for processor in options["postprocessors"]
+
+            if processor.get("key") != "EmbedThumbnail"
+        ]
+
+    if _is_valid_cookie_file(
+        RUNTIME_COOKIE_FILE
+    ):
 
         options[
             "cookiefile"
         ] = str(
             RUNTIME_COOKIE_FILE
         )
+
+    elif RUNTIME_COOKIE_FILE.exists():
+
+        try:
+
+            RUNTIME_COOKIE_FILE.unlink()
+
+        except OSError:
+
+            pass
 
     return options
 
@@ -1409,9 +1553,60 @@ def download_with_client(
 
     except yt_dlp.utils.DownloadError as error:
 
-        raise classify_download_error(
-            error
-        ) from error
+        message = str(error)
+        lowered = message.lower()
+
+        postprocess_failure = any(
+            marker in lowered
+            for marker in (
+                "postprocessing",
+                "conversion failed",
+                "embedthumbnail",
+                "unable to embed",
+                "thumbnail",
+            )
+        )
+
+        if postprocess_failure:
+
+            print(
+                "yt-dlp postprocessing failed; "
+                "retrying without thumbnail."
+            )
+
+            retry_tracker = ProgressTracker(
+                progress_callback
+            )
+
+            retry_options = build_ydl_options(
+                output_dir=job_dir,
+                progress_tracker=retry_tracker,
+                player_client=player_client,
+                embed_thumbnail=False,
+            )
+
+            try:
+
+                with yt_dlp.YoutubeDL(
+                    retry_options
+                ) as ydl:
+
+                    info = ydl.extract_info(
+                        url,
+                        download=True,
+                    )
+
+            except yt_dlp.utils.DownloadError as retry_error:
+
+                raise classify_download_error(
+                    retry_error
+                ) from retry_error
+
+        else:
+
+            raise classify_download_error(
+                error
+            ) from error
 
     if not info:
 

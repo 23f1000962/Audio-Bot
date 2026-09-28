@@ -41,7 +41,7 @@ from ytmusicapi import YTMusic
 
 logger = logging.getLogger(__name__)
 
-SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-lowram-1.1"
+SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-lowram-1.2"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -766,49 +766,101 @@ def _find_cookie_source() -> Path | None:
     return None
 
 
+def _is_valid_cookie_file(path: Path) -> bool:
+    """
+    Validate a Netscape/Mozilla-format yt-dlp cookie jar.
+
+    This intentionally rejects common Render configuration mistakes such
+    as putting environment-variable lines in cookies.txt.
+    """
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+
+        lines = path.read_text(
+            encoding="utf-8",
+            errors="replace",
+        ).splitlines()
+
+        header_found = any(
+            line.strip().startswith("# Netscape HTTP Cookie File")
+            or line.strip().startswith("# HTTP Cookie File")
+            for line in lines[:20]
+        )
+
+        if not header_found:
+            return False
+
+        for line in lines:
+            line = line.strip()
+
+            if not line or line.startswith("#"):
+                continue
+
+            # Netscape cookie records contain exactly seven tab-separated
+            # fields. This catches .env-style lines such as:
+            # RENDER_EXTERNAL_URL = https://...
+            if len(line.split("\t")) != 7:
+                return False
+
+        return True
+
+    except (OSError, UnicodeError):
+        return False
+
+
 def _find_cookie_file() -> str | None:
     """
     Return a writable copy of cookies.txt for yt-dlp.
 
     Render's /etc/secrets filesystem is read-only. yt-dlp can attempt to
-    save the cookie jar when closing, which causes:
-        OSError: [Errno 30] Read-only file system
+    save the cookie jar when closing, so the source is copied to /tmp.
 
-    Therefore the cookie file is copied to /tmp before yt-dlp uses it.
+    Invalid cookies are rejected before yt-dlp sees them, and any stale
+    runtime copy is removed so a previous bad cookie jar cannot survive
+    a Render restart/redeploy.
     """
     source = _find_cookie_source()
-
-    if source is None:
-        return None
-
     writable = Path("/tmp/audio-bot-cookies.txt")
 
+    if source is None:
+        try:
+            if writable.exists():
+                writable.unlink()
+        except OSError:
+            pass
+
+        return None
+
     try:
-        # Basic format check. A real Netscape cookie file normally starts
-        # with one of these headers. This also catches the common mistake
-        # of uploading .env contents as cookies.txt.
-        first_lines = source.read_text(
-            encoding="utf-8",
-            errors="replace",
-        ).splitlines()[:5]
-
-        has_netscape_header = any(
-            line.strip().startswith("# Netscape HTTP Cookie File")
-            or line.strip().startswith("# HTTP Cookie File")
-            for line in first_lines
-        )
-
-        if not has_netscape_header:
+        if not _is_valid_cookie_file(source):
             logger.error(
-                "cookies.txt at %s does not look like a Netscape cookie "
-                "file. Make sure Render's cookies.txt Secret File contains "
-                "the exported browser cookies, NOT the .env file.",
+                "Invalid cookies.txt at %s. Expected a Netscape-format "
+                "browser cookie export. Do NOT put .env/environment "
+                "variables such as RENDER_EXTERNAL_URL in cookies.txt.",
                 source,
             )
+
+            try:
+                if writable.exists():
+                    writable.unlink()
+            except OSError:
+                pass
+
             return None
 
         writable.write_bytes(source.read_bytes())
         os.chmod(writable, 0o600)
+
+        if not _is_valid_cookie_file(writable):
+            logger.error(
+                "Runtime cookie copy failed validation; ignoring cookies."
+            )
+            try:
+                writable.unlink()
+            except OSError:
+                pass
+            return None
 
         logger.info(
             "Using writable yt-dlp cookie copy: %s (source: %s)",
@@ -824,6 +876,13 @@ def _find_cookie_file() -> str | None:
             source,
             exc,
         )
+
+        try:
+            if writable.exists():
+                writable.unlink()
+        except OSError:
+            pass
+
         return None
 
 
@@ -831,9 +890,8 @@ def _ytdlp_common_args() -> list[str]:
     """
     Arguments shared by metadata and download calls.
 
-    BGUTIL is already installed in this project and its HTTP provider is
-    running on 127.0.0.1:4416 from start.sh. The explicit extractor argument
-    makes the connection unambiguous.
+    BGUTIL runs as a separate Render service. The explicit remote HTTP
+    endpoint makes the connection unambiguous.
 
     A cookies.txt is added automatically when present.
     """
@@ -1076,30 +1134,80 @@ def download_spotify_song(
         )
 
         if process.returncode != 0:
-            error = process.stderr.strip()
+            first_error = process.stderr.strip()
+            first_lower = first_error.lower()
 
-            message = (
-                error[-3000:]
-                if error
-                else "yt-dlp failed to download the audio."
+            # A download can succeed while FFmpeg fails during thumbnail
+            # embedding. Do not throw away the audio in that case. Retry the
+            # exact same track without thumbnail embedding.
+            postprocess_failure = any(
+                marker in first_lower
+                for marker in (
+                    "postprocessing",
+                    "conversion failed",
+                    "embedthumbnail",
+                    "unable to embed",
+                    "thumbnail",
+                )
             )
 
-            if (
-                "Sign in to confirm" in message
-                or "not a bot" in message
-                or "cookies-from-browser" in message
-                or "cookies" in message.lower()
-            ):
-                message = (
-                    "YouTube rejected the request as a bot/authentication "
-                    "challenge. Make sure a fresh Netscape-format "
-                    "cookies.txt is available at /etc/secrets/cookies.txt "
-                    "on Render. Do NOT put .env variables in cookies.txt. "
-                    "Original yt-dlp error:\n"
-                    + message
+            if postprocess_failure:
+                logger.warning(
+                    "YouTube Music postprocessing failed; "
+                    "retrying without thumbnail."
                 )
 
-            raise RuntimeError(message)
+                retry_command = []
+                skip_next = False
+
+                for argument in command:
+                    if skip_next:
+                        skip_next = False
+                        continue
+
+                    if argument == "--embed-thumbnail":
+                        continue
+
+                    if argument == "--postprocessor-args":
+                        skip_next = True
+                        continue
+
+                    retry_command.append(argument)
+
+                process = subprocess.run(
+                    retry_command,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=YTDLP_TIMEOUT,
+                    check=False,
+                )
+
+            if process.returncode != 0:
+                error = process.stderr.strip()
+
+                message = (
+                    error[-3000:]
+                    if error
+                    else "yt-dlp failed to download the audio."
+                )
+
+                if (
+                    "Sign in to confirm" in message
+                    or "not a bot" in message
+                    or "cookies-from-browser" in message
+                    or "cookies" in message.lower()
+                ):
+                    message = (
+                        "YouTube rejected the request as a bot/authentication "
+                        "challenge. Make sure a fresh Netscape-format "
+                        "cookies.txt is available at /etc/secrets/cookies.txt "
+                        "on Render. Do NOT put .env variables in cookies.txt. "
+                        "Original yt-dlp error:\n"
+                        + message
+                    )
+
+                raise RuntimeError(message)
 
         audio_files = [
             path
