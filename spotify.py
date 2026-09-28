@@ -41,7 +41,7 @@ from ytmusicapi import YTMusic
 
 logger = logging.getLogger(__name__)
 
-SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-lowram-1.2"
+SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-lowram-1.3"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -52,6 +52,10 @@ YT_MUSIC_RESULT_LIMIT = int(os.getenv("YT_MUSIC_RESULT_LIMIT", "8"))
 AUDIO_QUALITY = os.getenv("AUDIO_QUALITY", "192")
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "49"))
 YTDLP_TIMEOUT = int(os.getenv("YTDLP_TIMEOUT", "600"))
+FFPROBE_TIMEOUT = int(os.getenv("FFPROBE_TIMEOUT", "30"))
+SPOTIFY_DOWNLOAD_CANDIDATES = int(
+    os.getenv("SPOTIFY_DOWNLOAD_CANDIDATES", "6")
+)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -545,68 +549,74 @@ def _score_result(
     return score
 
 
-def _find_best_ytmusic_result(
+def _find_ytmusic_candidates(
     title: str,
     artist: str = "",
     duration: float | None = None,
-) -> dict[str, Any] | None:
-    queries = []
+    limit: int = YT_MUSIC_RESULT_LIMIT,
+) -> list[dict[str, Any]]:
+    """
+    Return multiple ranked YouTube Music candidates.
+
+    The old implementation selected only the highest-scoring result. That
+    meant one broken YouTube source could make an otherwise valid Spotify
+    track fail completely.
+
+    The downloader now uses this ranked list as a technical fallback chain:
+        candidate 1 -> candidate 2 -> candidate 3 -> ...
+
+    Matching remains metadata-based; technical download failures are handled
+    separately by download_spotify_song().
+    """
+    queries: list[str] = []
 
     if artist:
-        queries.append(f"{title} {artist}")
-        queries.append(f"{title} {artist} official audio")
+        queries.extend(
+            [
+                f"{title} {artist}",
+                f"{title} {artist} official audio",
+                f"{title} {artist} official",
+            ]
+        )
     else:
         queries.append(title)
 
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
 
+    search_limit = max(
+        1,
+        min(max(limit, YT_MUSIC_RESULT_LIMIT), 20),
+    )
+
     for query in queries:
-        try:
-            results = _search_ytmusic(
-                query,
-                YT_MUSIC_RESULT_LIMIT,
-                "songs",
-            )
-        except Exception as exc:
-            logger.warning(
-                "YouTube Music search failed for %r: %s",
-                query,
-                exc,
-            )
-            continue
-
-        for result in results:
-            video_id = result.get("id")
-
-            if video_id and video_id not in seen:
-                seen.add(video_id)
-                candidates.append(result)
-
-    # Fallback for tracks that YT Music exposes as videos rather than songs.
-    if not candidates:
-        try:
-            results = _search_ytmusic(
-                f"{title} {artist}".strip(),
-                YT_MUSIC_RESULT_LIMIT,
-                "videos",
-            )
+        for filter_name in ("songs", "videos"):
+            try:
+                results = _search_ytmusic(
+                    query,
+                    search_limit,
+                    filter_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "YouTube Music %s search failed for %r: %s",
+                    filter_name,
+                    query,
+                    exc,
+                )
+                continue
 
             for result in results:
                 video_id = result.get("id")
 
-                if video_id and video_id not in seen:
-                    seen.add(video_id)
-                    candidates.append(result)
+                if not video_id or video_id in seen:
+                    continue
 
-        except Exception as exc:
-            logger.warning(
-                "YouTube Music video fallback failed: %s",
-                exc,
-            )
+                seen.add(video_id)
+                candidates.append(result)
 
     if not candidates:
-        return None
+        return []
 
     ranked = [
         (
@@ -621,19 +631,56 @@ def _find_best_ytmusic_result(
         for result in candidates
     ]
 
-    ranked.sort(key=lambda pair: pair[0], reverse=True)
-
-    score, best = ranked[0]
-
-    logger.info(
-        "Selected YouTube Music result: score=%.1f title=%r artist=%r id=%s",
-        score,
-        best.get("title"),
-        best.get("artist"),
-        best.get("id"),
+    ranked.sort(
+        key=lambda pair: pair[0],
+        reverse=True,
     )
 
-    return best
+    output: list[dict[str, Any]] = []
+
+    for rank, (score, result) in enumerate(
+        ranked[: max(1, min(limit, 20))],
+        start=1,
+    ):
+        enriched = dict(result)
+        enriched["match_score"] = round(score, 2)
+        enriched["match_rank"] = rank
+        output.append(enriched)
+
+        logger.info(
+            "YouTube Music candidate #%d: score=%.1f title=%r "
+            "artist=%r duration=%s id=%s",
+            rank,
+            score,
+            result.get("title"),
+            result.get("artist"),
+            result.get("duration_text")
+            or _format_duration(
+                _duration_seconds(
+                    result.get("duration_seconds")
+                    or result.get("duration")
+                )
+            ),
+            result.get("id"),
+        )
+
+    return output
+
+
+def _find_best_ytmusic_result(
+    title: str,
+    artist: str = "",
+    duration: float | None = None,
+) -> dict[str, Any] | None:
+    """Compatibility wrapper returning the first ranked candidate."""
+    candidates = _find_ytmusic_candidates(
+        title=title,
+        artist=artist,
+        duration=duration,
+        limit=YT_MUSIC_RESULT_LIMIT,
+    )
+
+    return candidates[0] if candidates else None
 
 
 # ---------------------------------------------------------------------------
@@ -670,12 +717,13 @@ def search_spotify(
         try:
             spotify_track = _fetch_spotify_track(parsed["id"])
 
-            best = _find_best_ytmusic_result(
+            candidates = _find_ytmusic_candidates(
                 title=spotify_track["title"],
                 artist=spotify_track["artist"],
+                limit=max(1, min(limit, 20)),
             )
 
-            if not best:
+            if not candidates:
                 return {
                     "results": [],
                     "error": (
@@ -684,24 +732,29 @@ def search_spotify(
                     ),
                 }
 
-            best.update(
-                {
-                    "spotify_id": parsed["id"],
-                    "spotify_url": spotify_track["spotify_url"],
-                    "album": (
-                        spotify_track["album"]
-                        or best.get("album", "")
-                    ),
-                    "artwork": (
-                        best.get("artwork")
-                        or spotify_track.get("artwork")
-                        or ""
-                    ),
-                    "source": "youtube_music",
-                }
-            )
+            results = []
 
-            return {"results": [best]}
+            for candidate in candidates:
+                enriched = dict(candidate)
+                enriched.update(
+                    {
+                        "spotify_id": parsed["id"],
+                        "spotify_url": spotify_track["spotify_url"],
+                        "album": (
+                            spotify_track["album"]
+                            or candidate.get("album", "")
+                        ),
+                        "artwork": (
+                            candidate.get("artwork")
+                            or spotify_track.get("artwork")
+                            or ""
+                        ),
+                        "source": "youtube_music",
+                    }
+                )
+                results.append(enriched)
+
+            return {"results": results}
 
         except Exception as exc:
             logger.exception("Spotify track lookup failed")
@@ -768,10 +821,11 @@ def _find_cookie_source() -> Path | None:
 
 def _is_valid_cookie_file(path: Path) -> bool:
     """
-    Validate a Netscape/Mozilla-format yt-dlp cookie jar.
+    Validate a Netscape/Mozilla cookie jar before yt-dlp uses it.
 
-    This intentionally rejects common Render configuration mistakes such
-    as putting environment-variable lines in cookies.txt.
+    This rejects common Render mistakes such as putting:
+        RENDER_EXTERNAL_URL=...
+    inside cookies.txt.
     """
     try:
         if not path.is_file() or path.stat().st_size <= 0:
@@ -797,9 +851,7 @@ def _is_valid_cookie_file(path: Path) -> bool:
             if not line or line.startswith("#"):
                 continue
 
-            # Netscape cookie records contain exactly seven tab-separated
-            # fields. This catches .env-style lines such as:
-            # RENDER_EXTERNAL_URL = https://...
+            # Netscape cookies have exactly seven TAB-separated fields.
             if len(line.split("\t")) != 7:
                 return False
 
@@ -811,14 +863,10 @@ def _is_valid_cookie_file(path: Path) -> bool:
 
 def _find_cookie_file() -> str | None:
     """
-    Return a writable copy of cookies.txt for yt-dlp.
+    Return a validated writable copy of cookies.txt.
 
-    Render's /etc/secrets filesystem is read-only. yt-dlp can attempt to
-    save the cookie jar when closing, so the source is copied to /tmp.
-
-    Invalid cookies are rejected before yt-dlp sees them, and any stale
-    runtime copy is removed so a previous bad cookie jar cannot survive
-    a Render restart/redeploy.
+    Render Secret Files are read-only, so yt-dlp gets a /tmp copy.
+    Any stale invalid runtime copy is removed first.
     """
     source = _find_cookie_source()
     writable = Path("/tmp/audio-bot-cookies.txt")
@@ -829,15 +877,14 @@ def _find_cookie_file() -> str | None:
                 writable.unlink()
         except OSError:
             pass
-
         return None
 
     try:
         if not _is_valid_cookie_file(source):
             logger.error(
                 "Invalid cookies.txt at %s. Expected a Netscape-format "
-                "browser cookie export. Do NOT put .env/environment "
-                "variables such as RENDER_EXTERNAL_URL in cookies.txt.",
+                "browser cookie export. Do NOT put environment variables "
+                "such as RENDER_EXTERNAL_URL in cookies.txt.",
                 source,
             )
 
@@ -863,7 +910,8 @@ def _find_cookie_file() -> str | None:
             return None
 
         logger.info(
-            "Using writable yt-dlp cookie copy: %s (source: %s)",
+            "Using validated writable yt-dlp cookie copy: %s "
+            "(source: %s)",
             writable,
             source,
         )
@@ -982,111 +1030,168 @@ def _get_ytdlp_metadata(video_id: str) -> dict[str, Any]:
 # Download
 # ---------------------------------------------------------------------------
 
-def download_spotify_song(
-    track_id: str,
-    output_dir: str | Path,
-    track: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+
+def _run_ffprobe(audio_path: Path) -> dict[str, Any]:
     """
-    Download a selected YouTube Music result as MP3.
+    Inspect the first audio stream using ffprobe.
 
-    track_id is normally the YouTube Music video ID stored by bot.py.
-
-    For compatibility, a Spotify URL/Spotify ID can also be supplied.
+    A successful yt-dlp process is not enough: for problematic YouTube
+    sources, yt-dlp can leave a file that exists but has no readable audio
+    stream. ffprobe is the authoritative check before accepting a candidate.
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_name,duration",
+        "-of",
+        "json",
+        str(audio_path),
+    ]
 
-    source_spotify_id = ""
+    try:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=FFPROBE_TIMEOUT,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "ffprobe is not installed or is not available in PATH."
+        ) from exc
 
-    # If bot.py passes a Spotify URL, resolve it first.
-    parsed = parse_spotify_url(track_id)
-
-    if parsed:
-        if parsed["type"] != "track":
-            raise RuntimeError(
-                "Only individual Spotify tracks are supported."
-            )
-
-        source_spotify_id = parsed["id"]
-        spotify_track = _fetch_spotify_track(source_spotify_id)
-
-        best = _find_best_ytmusic_result(
-            spotify_track["title"],
-            spotify_track["artist"],
+    if process.returncode != 0:
+        raise RuntimeError(
+            process.stderr.strip()
+            or "ffprobe could not inspect the audio file."
         )
 
-        if not best:
-            raise RuntimeError(
-                "Could not find the Spotify track on YouTube Music."
-            )
+    try:
+        data = json.loads(process.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "ffprobe returned invalid JSON."
+        ) from exc
 
-        video_id = best["id"]
-        title = spotify_track["title"]
-        artist = spotify_track["artist"] or best.get("artist", "")
-        album = spotify_track["album"] or best.get("album", "")
-        artwork = spotify_track["artwork"] or best.get("artwork", "")
+    streams = data.get("streams") or []
 
-    else:
-        # Normal path from bot.py:
-        # track_id == YouTube Music video ID.
-        video_id = str(track_id).strip()
+    if not streams:
+        raise RuntimeError(
+            "ffprobe found no audio stream in the downloaded file."
+        )
 
-        if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id):
-            raise RuntimeError("Invalid YouTube Music video ID.")
+    stream = streams[0] if isinstance(streams[0], dict) else {}
+    codec = _clean_text(stream.get("codec_name"))
 
-        # IMPORTANT for 512 MB Render instances:
-        # bot.py already has the YouTube Music search result. Reusing that
-        # metadata avoids spawning a second yt-dlp process just to inspect
-        # the same video before downloading it.
-        track = track if isinstance(track, dict) else {}
+    if not codec:
+        raise RuntimeError(
+            "ffprobe could not determine the audio codec."
+        )
 
-        title = _clean_text(track.get("title"))
-        artist = _clean_text(track.get("artist"))
-        album = _clean_text(track.get("album"))
-        artwork = _clean_text(track.get("artwork"))
+    duration = _duration_seconds(stream.get("duration"))
 
-        if not title:
-            # Last-resort fallback for callers outside bot.py.
-            metadata = _get_ytdlp_metadata(video_id)
+    return {
+        "codec": codec,
+        "duration": duration,
+    }
 
-            title = _clean_text(metadata.get("track")) or _clean_text(
-                metadata.get("title")
-            )
 
-            artist = (
-                artist
-                or _clean_text(metadata.get("artist"))
-                or _clean_text(metadata.get("uploader"))
-                or _clean_text(metadata.get("channel"))
-            )
+def _audio_files(job_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in job_dir.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in {
+            ".mp3",
+            ".m4a",
+            ".opus",
+            ".webm",
+        }
+    ]
 
-            album = album or _clean_text(metadata.get("album"))
-            artwork = artwork or _clean_text(metadata.get("thumbnail"))
 
-        if not title:
-            raise RuntimeError(
-                "Could not determine the YouTube Music track title."
-            )
+def _find_valid_mp3(job_dir: Path) -> tuple[Path, dict[str, Any]]:
+    """
+    Find the newest MP3 and require a valid audio stream.
+    """
+    audio_files = [
+        path
+        for path in _audio_files(job_dir)
+        if path.suffix.lower() == ".mp3"
+    ]
 
-    music_url = f"https://music.youtube.com/watch?v={video_id}"
+    if not audio_files:
+        raise RuntimeError(
+            "yt-dlp completed but no MP3 file was produced."
+        )
 
-    job_dir = Path(
-        tempfile.mkdtemp(
-            prefix="spotify_",
-            dir=str(output_dir),
+    audio_path = max(
+        audio_files,
+        key=lambda path: path.stat().st_mtime,
+    )
+
+    if audio_path.stat().st_size <= 0:
+        raise RuntimeError("The downloaded MP3 is empty.")
+
+    probe = _run_ffprobe(audio_path)
+
+    return audio_path, probe
+
+
+def _is_authentication_error(message: str) -> bool:
+    lowered = message.lower()
+
+    return any(
+        marker in lowered
+        for marker in (
+            "sign in to confirm",
+            "not a bot",
+            "cookies-from-browser",
+            "authentication challenge",
+            "confirm you're not a bot",
         )
     )
 
-    base_name = _safe_filename(
-        f"{title} - {artist}" if artist else title,
-        "audio",
+
+def _is_audio_codec_failure(message: str) -> bool:
+    lowered = message.lower()
+
+    return any(
+        marker in lowered
+        for marker in (
+            "unable to obtain file audio codec with ffprobe",
+            "could not determine the audio codec",
+            "no audio stream",
+            "ffprobe found no audio stream",
+        )
     )
 
-    output_template = str(job_dir / f"{base_name}.%(ext)s")
 
-    _check_ytdlp()
+def _is_postprocessing_failure(message: str) -> bool:
+    lowered = message.lower()
 
+    return any(
+        marker in lowered
+        for marker in (
+            "postprocessing",
+            "conversion failed",
+            "embedthumbnail",
+            "unable to embed",
+            "thumbnail",
+        )
+    )
+
+
+def _build_spotify_ytdlp_command(
+    music_url: str,
+    output_template: str,
+    embed_thumbnail: bool = True,
+) -> list[str]:
     command = [
         "yt-dlp",
         *_ytdlp_common_args(),
@@ -1109,22 +1214,80 @@ def download_spotify_song(
         "mp3",
         "--audio-quality",
         f"{AUDIO_QUALITY}K",
-        "--embed-thumbnail",
         "--add-metadata",
-        "--postprocessor-args",
-        "ThumbnailsConvertor:-q:v 2",
-        "--output",
-        output_template,
-        music_url,
     ]
 
-    try:
-        logger.info(
-            "Downloading YouTube Music audio: %s",
-            music_url,
+    if embed_thumbnail:
+        command.extend(
+            [
+                "--embed-thumbnail",
+                "--postprocessor-args",
+                "ThumbnailsConvertor:-q:v 2",
+            ]
         )
 
-        process = subprocess.run(
+    command.extend(
+        [
+            "--output",
+            output_template,
+            music_url,
+        ]
+    )
+
+    return command
+
+
+def _download_one_spotify_candidate(
+    video_id: str,
+    title: str,
+    artist: str,
+    job_dir: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """
+    Download one YouTube Music candidate.
+
+    Returns:
+        (validated_mp3_path, ffprobe_metadata)
+
+    The function performs a secondary retry without thumbnail only for
+    genuine postprocessing/thumbnail failures. An ffprobe/audio-codec
+    failure is treated as a bad candidate and returned to the caller so the
+    next candidate can be tried.
+    """
+    candidate_dir = job_dir / f"candidate_{video_id}"
+    candidate_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    base_name = _safe_filename(
+        f"{title} - {artist}" if artist else title,
+        "audio",
+    )
+
+    output_template = str(
+        candidate_dir / f"{base_name}.%(ext)s"
+    )
+
+    music_url = (
+        f"https://music.youtube.com/watch?v={video_id}"
+    )
+
+    def run_download(embed_thumbnail: bool) -> subprocess.CompletedProcess:
+        command = _build_spotify_ytdlp_command(
+            music_url=music_url,
+            output_template=output_template,
+            embed_thumbnail=embed_thumbnail,
+        )
+
+        logger.info(
+            "Downloading YouTube Music candidate %s "
+            "(thumbnail=%s)",
+            video_id,
+            embed_thumbnail,
+        )
+
+        return subprocess.run(
             command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -1133,131 +1296,443 @@ def download_spotify_song(
             check=False,
         )
 
-        if process.returncode != 0:
-            first_error = process.stderr.strip()
-            first_lower = first_error.lower()
+    process = run_download(embed_thumbnail=True)
 
-            # A download can succeed while FFmpeg fails during thumbnail
-            # embedding. Do not throw away the audio in that case. Retry the
-            # exact same track without thumbnail embedding.
-            postprocess_failure = any(
-                marker in first_lower
-                for marker in (
-                    "postprocessing",
-                    "conversion failed",
-                    "embedthumbnail",
-                    "unable to embed",
-                    "thumbnail",
-                )
+    if process.returncode != 0:
+        message = process.stderr.strip()
+
+        if _is_authentication_error(message):
+            raise RuntimeError(
+                "YouTube rejected the request as a bot/authentication "
+                "challenge. Make sure a fresh Netscape-format "
+                "cookies.txt is available at /etc/secrets/cookies.txt "
+                "on Render. Do NOT put environment variables in "
+                "cookies.txt. Original yt-dlp error:\n"
+                + (message[-3000:] or "authentication challenge")
             )
 
-            if postprocess_failure:
-                logger.warning(
-                    "YouTube Music postprocessing failed; "
-                    "retrying without thumbnail."
-                )
+        # If yt-dlp reports the ffprobe/audio-codec problem, do NOT waste
+        # another attempt on the same broken source. The caller will move
+        # directly to the next YouTube Music candidate.
+        if _is_audio_codec_failure(message):
+            raise RuntimeError(
+                "Candidate has no readable audio stream. "
+                "ffprobe/codec validation failed:\n"
+                + (message[-1500:] or "unknown codec failure")
+            )
 
-                retry_command = []
-                skip_next = False
+        if _is_postprocessing_failure(message):
+            logger.warning(
+                "YouTube Music postprocessing failed for %s; "
+                "retrying without thumbnail.",
+                video_id,
+            )
 
-                for argument in command:
-                    if skip_next:
-                        skip_next = False
-                        continue
-
-                    if argument == "--embed-thumbnail":
-                        continue
-
-                    if argument == "--postprocessor-args":
-                        skip_next = True
-                        continue
-
-                    retry_command.append(argument)
-
-                process = subprocess.run(
-                    retry_command,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    timeout=YTDLP_TIMEOUT,
-                    check=False,
-                )
+            process = run_download(embed_thumbnail=False)
 
             if process.returncode != 0:
-                error = process.stderr.strip()
+                message = process.stderr.strip()
 
-                message = (
-                    error[-3000:]
-                    if error
-                    else "yt-dlp failed to download the audio."
-                )
-
-                if (
-                    "Sign in to confirm" in message
-                    or "not a bot" in message
-                    or "cookies-from-browser" in message
-                    or "cookies" in message.lower()
-                ):
-                    message = (
-                        "YouTube rejected the request as a bot/authentication "
-                        "challenge. Make sure a fresh Netscape-format "
-                        "cookies.txt is available at /etc/secrets/cookies.txt "
-                        "on Render. Do NOT put .env variables in cookies.txt. "
-                        "Original yt-dlp error:\n"
-                        + message
+                if _is_authentication_error(message):
+                    raise RuntimeError(
+                        "YouTube rejected the request as a "
+                        "bot/authentication challenge. Original "
+                        "yt-dlp error:\n"
+                        + (message[-3000:] or "authentication challenge")
                     )
 
-                raise RuntimeError(message)
+                if _is_audio_codec_failure(message):
+                    raise RuntimeError(
+                        "Candidate has no readable audio stream after "
+                        "thumbnail fallback. ffprobe/codec validation "
+                        "failed:\n"
+                        + (message[-1500:] or "unknown codec failure")
+                    )
 
-        audio_files = [
-            path
-            for path in job_dir.iterdir()
-            if path.is_file()
-            and path.suffix.lower() in {".mp3", ".m4a", ".opus", ".webm"}
-        ]
+        if process.returncode != 0:
+            message = process.stderr.strip()
 
-        if not audio_files:
             raise RuntimeError(
-                "yt-dlp completed but no audio file was produced."
+                message[-3000:]
+                if message
+                else "yt-dlp failed to download this YouTube Music candidate."
             )
 
-        audio_path = max(
-            audio_files,
-            key=lambda path: path.stat().st_mtime,
+    # Even when yt-dlp exits successfully, validate the resulting MP3.
+    return _find_valid_mp3(candidate_dir)
+
+
+def download_spotify_song(
+    track_id: str,
+    output_dir: str | Path,
+    track: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Download Spotify/YouTube Music audio with ranked technical fallbacks.
+
+    Strategy:
+        1. Put the explicitly selected YouTube Music result first.
+        2. Search additional ranked candidates for the same title/artist.
+        3. Try candidates sequentially.
+        4. Validate every resulting MP3 with ffprobe.
+        5. If thumbnail postprocessing fails, retry that same candidate
+           without thumbnail.
+        6. If the candidate has no readable audio stream, discard it and
+           immediately try the next candidate.
+        7. Stop immediately for authentication failures because changing
+           candidates cannot fix an invalid YouTube session.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    source_spotify_id = ""
+    selected_video_id = ""
+    title = ""
+    artist = ""
+    album = ""
+    artwork = ""
+    wanted_duration: float | None = None
+
+    parsed = parse_spotify_url(track_id)
+
+    if parsed:
+        if parsed["type"] != "track":
+            raise RuntimeError(
+                "Only individual Spotify tracks are supported."
+            )
+
+        source_spotify_id = parsed["id"]
+        spotify_track = _fetch_spotify_track(
+            source_spotify_id
         )
 
-        if audio_path.suffix.lower() != ".mp3":
+        title = spotify_track["title"]
+        artist = spotify_track["artist"]
+        album = spotify_track["album"]
+        artwork = spotify_track["artwork"]
+
+    else:
+        selected_video_id = str(
+            track_id
+        ).strip()
+
+        if not re.fullmatch(
+            r"[A-Za-z0-9_-]{6,20}",
+            selected_video_id,
+        ):
             raise RuntimeError(
-                f"Expected MP3 output but received {audio_path.suffix}."
+                "Invalid YouTube Music video ID."
             )
 
-        file_size = audio_path.stat().st_size
-        max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+        track = (
+            track
+            if isinstance(track, dict)
+            else {}
+        )
 
-        if file_size > max_bytes:
-            raise RuntimeError(
-                f"The downloaded MP3 is too large for Telegram "
-                f"({file_size / 1024 / 1024:.1f} MB)."
+        title = _clean_text(
+            track.get("title")
+        )
+        artist = _clean_text(
+            track.get("artist")
+        )
+        album = _clean_text(
+            track.get("album")
+        )
+        artwork = _clean_text(
+            track.get("artwork")
+        )
+
+        wanted_duration = _duration_seconds(
+            track.get("duration_seconds")
+            or track.get("duration")
+        )
+
+        if not title:
+            metadata = _get_ytdlp_metadata(
+                selected_video_id
             )
 
-        return {
-            "path": str(audio_path),
-            "filename": audio_path.name,
-            "title": title,
-            "artist": artist,
-            "album": album,
-            "duration": None,
-            "quality": f"MP3 {AUDIO_QUALITY} kbps",
-            "artwork": artwork,
-            "job_dir": str(job_dir),
-            "source": "youtube_music",
-            "youtube_url": music_url,
-            "spotify_id": source_spotify_id,
-            "file_size": file_size,
-        }
+            title = (
+                _clean_text(metadata.get("track"))
+                or _clean_text(metadata.get("title"))
+            )
+
+            artist = (
+                artist
+                or _clean_text(metadata.get("artist"))
+                or _clean_text(metadata.get("uploader"))
+                or _clean_text(metadata.get("channel"))
+            )
+
+            album = (
+                album
+                or _clean_text(metadata.get("album"))
+            )
+
+            artwork = (
+                artwork
+                or _clean_text(metadata.get("thumbnail"))
+            )
+
+            wanted_duration = (
+                wanted_duration
+                or _duration_seconds(
+                    metadata.get("duration")
+                )
+            )
+
+        if not title:
+            raise RuntimeError(
+                "Could not determine the YouTube Music track title."
+            )
+
+    # Build the ranked candidate list.
+    candidates = _find_ytmusic_candidates(
+        title=title,
+        artist=artist,
+        duration=wanted_duration,
+        limit=max(
+            1,
+            min(
+                SPOTIFY_DOWNLOAD_CANDIDATES,
+                12,
+            ),
+        ),
+    )
+
+    # If the user selected a specific result, always try that exact result
+    # first. This preserves the confirmation-selection behavior in bot.py.
+    if selected_video_id:
+        selected_candidate = None
+        remaining = []
+
+        for candidate in candidates:
+            if candidate.get("id") == selected_video_id:
+                selected_candidate = candidate
+            else:
+                remaining.append(candidate)
+
+        if selected_candidate is None:
+            selected_candidate = {
+                "id": selected_video_id,
+                "track_id": selected_video_id,
+                "youtube_id": selected_video_id,
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "duration": wanted_duration,
+                "duration_seconds": wanted_duration,
+                "duration_text": _format_duration(
+                    wanted_duration
+                ),
+                "artwork": artwork,
+                "source": "youtube_music",
+            }
+
+        candidates = [
+            selected_candidate,
+            *remaining,
+        ]
+
+    if not candidates:
+        raise RuntimeError(
+            "Could not find any usable YouTube Music candidates "
+            f"for {title!r}."
+        )
+
+    # Deduplicate candidate IDs while preserving order.
+    unique_candidates = []
+    seen_ids: set[str] = set()
+
+    for candidate in candidates:
+        video_id = str(
+            candidate.get("id")
+            or candidate.get("video_id")
+            or ""
+        ).strip()
+
+        if not video_id or video_id in seen_ids:
+            continue
+
+        seen_ids.add(video_id)
+        unique_candidates.append(
+            candidate
+        )
+
+    job_dir = Path(
+        tempfile.mkdtemp(
+            prefix="spotify_",
+            dir=str(output_dir),
+        )
+    )
+
+    failures: list[str] = []
+
+    try:
+        for index, candidate in enumerate(
+            unique_candidates,
+            start=1,
+        ):
+            video_id = str(
+                candidate.get("id")
+                or candidate.get("video_id")
+                or ""
+            ).strip()
+
+            candidate_title = (
+                _clean_text(
+                    candidate.get("title")
+                )
+                or title
+            )
+
+            candidate_artist = (
+                _clean_text(
+                    candidate.get("artist")
+                )
+                or artist
+            )
+
+            candidate_duration = _duration_seconds(
+                candidate.get("duration_seconds")
+                or candidate.get("duration")
+            )
+
+            logger.info(
+                "Spotify/YT Music fallback attempt %d/%d: "
+                "title=%r artist=%r duration=%s id=%s",
+                index,
+                len(unique_candidates),
+                candidate_title,
+                candidate_artist,
+                _format_duration(
+                    candidate_duration
+                ),
+                video_id,
+            )
+
+            try:
+                audio_path, probe = (
+                    _download_one_spotify_candidate(
+                        video_id=video_id,
+                        title=candidate_title,
+                        artist=candidate_artist,
+                        job_dir=job_dir,
+                    )
+                )
+
+                file_size = audio_path.stat().st_size
+                max_bytes = (
+                    MAX_FILE_SIZE_MB
+                    * 1024
+                    * 1024
+                )
+
+                if file_size > max_bytes:
+                    raise RuntimeError(
+                        "The downloaded MP3 is too large for Telegram "
+                        f"({file_size / 1024 / 1024:.1f} MB)."
+                    )
+
+                logger.info(
+                    "Spotify download succeeded on candidate %d/%d: "
+                    "%s codec=%s duration=%s",
+                    index,
+                    len(unique_candidates),
+                    video_id,
+                    probe.get("codec"),
+                    _format_duration(
+                        probe.get("duration")
+                    ),
+                )
+
+                return {
+                    "path": str(audio_path),
+                    "filename": audio_path.name,
+                    "title": title,
+                    "artist": artist or candidate_artist,
+                    "album": album or _clean_text(
+                        candidate.get("album")
+                    ),
+                    "duration": (
+                        wanted_duration
+                        or candidate_duration
+                        or probe.get("duration")
+                    ),
+                    "quality": f"MP3 {AUDIO_QUALITY} kbps",
+                    "artwork": (
+                        artwork
+                        or _clean_text(
+                            candidate.get("artwork")
+                        )
+                    ),
+                    "job_dir": str(job_dir),
+                    "source": "youtube_music",
+                    "youtube_url": (
+                        f"https://music.youtube.com/watch?v={video_id}"
+                    ),
+                    "spotify_id": source_spotify_id,
+                    "youtube_id": video_id,
+                    "file_size": file_size,
+                    "codec": probe.get("codec"),
+                    "candidate_rank": index,
+                    "candidate_count": len(unique_candidates),
+                }
+
+            except Exception as exc:
+                message = str(exc).strip()
+
+                # Authentication is global, not candidate-specific.
+                if _is_authentication_error(
+                    message
+                ):
+                    raise
+
+                failures.append(
+                    f"#{index} {video_id}: "
+                    f"{message[-500:] or 'unknown failure'}"
+                )
+
+                logger.warning(
+                    "Spotify candidate %d/%d failed: %s",
+                    index,
+                    len(unique_candidates),
+                    message[-1200:],
+                )
+
+                # Candidate directory is disposable. This keeps broken
+                # .webm/.m4a files from contaminating later attempts.
+                candidate_dir = (
+                    job_dir / f"candidate_{video_id}"
+                )
+
+                shutil.rmtree(
+                    candidate_dir,
+                    ignore_errors=True,
+                )
+
+                continue
+
+        summary = "\n".join(
+            failures[-6:]
+        )
+
+        raise RuntimeError(
+            "No usable YouTube Music audio source was found "
+            f"for {title!r} after trying "
+            f"{len(unique_candidates)} candidate(s).\n"
+            + summary
+        )
 
     except Exception:
-        shutil.rmtree(job_dir, ignore_errors=True)
+        shutil.rmtree(
+            job_dir,
+            ignore_errors=True,
+        )
         raise
 
 
