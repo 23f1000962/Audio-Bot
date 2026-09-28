@@ -42,7 +42,7 @@ from spotify import (
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "3.1.0"
+BOT_VERSION = "3.2.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -1303,6 +1303,8 @@ async def process_spotify_download(
                 track_id,
 
                 DOWNLOAD_DIR,
+
+                track,
             )
 
         # ====================================================
@@ -2216,7 +2218,7 @@ def main():
         )
 
         .concurrent_updates(
-            True
+            False
         )
 
         .post_init(
@@ -2344,7 +2346,7 @@ def main():
     )
 
     print(
-        "🔐 YouTube PO Tokens: BGUTIL"
+        "🔐 YouTube PO Tokens: BGUTIL (memory-capped)"
     )
 
     print(
@@ -2369,8 +2371,11 @@ def main():
     )
 
     print(
-        f"⚡ Concurrent downloads: "
-        f"{MAX_CONCURRENT_DOWNLOADS}"
+        f"⚡ Concurrent downloads: {MAX_CONCURRENT_DOWNLOADS}"
+    )
+
+    print(
+        "🧠 Memory mode: low-RAM / sequential updates"
     )
 
     print(

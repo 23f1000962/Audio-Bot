@@ -1,22 +1,27 @@
 #!/bin/sh
-
 set -eu
 
 echo "============================================"
-echo " Audio Bot starting"
+echo " Audio Bot starting (low-RAM mode)"
 echo "============================================"
 
-echo "[1/4] Checking FFmpeg..."
+# Reduce allocator fragmentation in the Python process on small containers.
+export PYTHONMALLOC=malloc
+export MALLOC_ARENA_MAX=2
+export DENO_NO_UPDATE_CHECK=1
+
+ echo "[1/4] Checking FFmpeg..."
 ffmpeg -version | head -n 1
 
 echo "[2/4] Checking Deno..."
 deno --version
 
-echo "[3/4] Starting BGUTIL PO Token Provider..."
+echo "[3/4] Starting BGUTIL PO Token Provider (V8 heap capped)..."
 
 cd /opt/bgutil/server/node_modules
 
 deno run \
+    --v8-flags=--max-old-space-size=96 \
     --allow-env \
     --allow-net \
     --allow-ffi=. \
@@ -34,7 +39,6 @@ MAX_ATTEMPTS=30
 ATTEMPT=1
 
 while [ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]; do
-
     if ! kill -0 "${BGUTIL_PID}" 2>/dev/null; then
         echo "ERROR: BGUTIL provider stopped unexpectedly."
         exit 1
@@ -66,11 +70,11 @@ fi
 
 echo "BGUTIL PO Token Provider is running on:"
 echo "http://127.0.0.1:4416"
+echo "BGUTIL V8 heap limit: 96 MB"
 
 echo "============================================"
 echo "[4/4] Starting Telegram bot"
 echo "============================================"
 
 cd /app
-
 exec python bot.py

@@ -41,7 +41,7 @@ from ytmusicapi import YTMusic
 
 logger = logging.getLogger(__name__)
 
-SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-1.0"
+SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-lowram-1.1"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -927,6 +927,7 @@ def _get_ytdlp_metadata(video_id: str) -> dict[str, Any]:
 def download_spotify_song(
     track_id: str,
     output_dir: str | Path,
+    track: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Download a selected YouTube Music result as MP3.
@@ -976,20 +977,34 @@ def download_spotify_song(
         if not re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id):
             raise RuntimeError("Invalid YouTube Music video ID.")
 
-        metadata = _get_ytdlp_metadata(video_id)
+        # IMPORTANT for 512 MB Render instances:
+        # bot.py already has the YouTube Music search result. Reusing that
+        # metadata avoids spawning a second yt-dlp process just to inspect
+        # the same video before downloading it.
+        track = track if isinstance(track, dict) else {}
 
-        title = _clean_text(metadata.get("track")) or _clean_text(
-            metadata.get("title")
-        )
+        title = _clean_text(track.get("title"))
+        artist = _clean_text(track.get("artist"))
+        album = _clean_text(track.get("album"))
+        artwork = _clean_text(track.get("artwork"))
 
-        artist = (
-            _clean_text(metadata.get("artist"))
-            or _clean_text(metadata.get("uploader"))
-            or _clean_text(metadata.get("channel"))
-        )
+        if not title:
+            # Last-resort fallback for callers outside bot.py.
+            metadata = _get_ytdlp_metadata(video_id)
 
-        album = _clean_text(metadata.get("album"))
-        artwork = _clean_text(metadata.get("thumbnail"))
+            title = _clean_text(metadata.get("track")) or _clean_text(
+                metadata.get("title")
+            )
+
+            artist = (
+                artist
+                or _clean_text(metadata.get("artist"))
+                or _clean_text(metadata.get("uploader"))
+                or _clean_text(metadata.get("channel"))
+            )
+
+            album = album or _clean_text(metadata.get("album"))
+            artwork = artwork or _clean_text(metadata.get("thumbnail"))
 
         if not title:
             raise RuntimeError(
@@ -1017,10 +1032,20 @@ def download_spotify_song(
     command = [
         "yt-dlp",
         *_ytdlp_common_args(),
-        "--newline",
+        "--quiet",
+        "--no-warnings",
+        "--no-progress",
         "--no-check-certificates",
         "--format",
         "bestaudio/best",
+        "--concurrent-fragments",
+        "1",
+        "--retries",
+        "2",
+        "--fragment-retries",
+        "2",
+        "--socket-timeout",
+        "30",
         "--extract-audio",
         "--audio-format",
         "mp3",
@@ -1043,14 +1068,15 @@ def download_spotify_song(
 
         process = subprocess.run(
             command,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             timeout=YTDLP_TIMEOUT,
             check=False,
         )
 
         if process.returncode != 0:
-            error = process.stderr.strip() or process.stdout.strip()
+            error = process.stderr.strip()
 
             message = (
                 error[-3000:]
