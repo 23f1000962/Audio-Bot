@@ -1,4 +1,4 @@
-9# 🎵 Audio Bot
+# 🎵 Audio Bot
 
 A Telegram bot that converts YouTube and YouTube Music links into high-quality audio.
 
