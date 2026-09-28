@@ -1,16 +1,8 @@
 {
-  "name": "audio-bot-cloudflare",
+  "name": "audio-bot-youtube-engine",
   "private": true,
-  "version": "0.3.0",
   "type": "module",
-  "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
-  },
   "dependencies": {
-    "@cloudflare/containers": "^0.3.7"
-  },
-  "devDependencies": {
-    "wrangler": "^4.35.0"
+    "youtubei.js": "18.1.0"
   }
 }

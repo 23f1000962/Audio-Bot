@@ -1,339 +1,138 @@
+"""Android-first YouTube authentication for Audio-Bot.
+
+Authentication uses YouTube.js' OAuth device flow. The bot never asks for a
+Google password and never receives a browser cookie file.
 """
-Personal YouTube authentication helper for Audio-Bot.
-
-This does NOT collect a Google username/password.
-
-yt-dlp currently uses a browser-exported YouTube cookie jar for this kind of
-server-side authentication. The Telegram bot provides a private /login flow:
-
-    /login
-      -> export a fresh YouTube cookies.txt in a private/incognito browser
-      -> send cookies.txt to this private bot as a DOCUMENT
-      -> bot validates it and stores a runtime copy
-
-The cookie file is treated as a credential and is never printed to logs.
-"""
-
 from __future__ import annotations
 
 import os
-import shutil
-import tempfile
-from pathlib import Path
-
+import requests
 from telegram import Update
 from telegram.ext import ContextTypes
 
-
-OWNER_TELEGRAM_ID = int(os.getenv("OWNER_TELEGRAM_ID", "0") or "0")
-
-COOKIE_FILE = Path(
-    os.getenv("YOUTUBE_COOKIE_FILE", "/etc/secrets/cookies.txt")
-)
-
-RUNTIME_COOKIE_FILE = Path(
-    os.getenv("YOUTUBE_RUNTIME_COOKIE_FILE", "/tmp/youtube-cookies.txt")
-)
-
-MAX_COOKIE_FILE_BYTES = 1024 * 1024
+OWNER_TELEGRAM_ID = int(os.getenv('OWNER_TELEGRAM_ID', '0') or '0')
+ENGINE_URL = os.getenv('YOUTUBE_ENGINE_URL', 'http://127.0.0.1:8765').rstrip('/')
+TIMEOUT = 15
 
 
 def is_owner(update: Update) -> bool:
-    """Return True only for the configured personal Telegram account."""
     user = update.effective_user
-
-    if not user or OWNER_TELEGRAM_ID <= 0:
-        return False
-
-    return user.id == OWNER_TELEGRAM_ID
+    return bool(user and OWNER_TELEGRAM_ID > 0 and user.id == OWNER_TELEGRAM_ID)
 
 
-def _is_valid_cookie_file(path: Path) -> bool:
-    """Validate a Mozilla/Netscape-format cookie file."""
-    try:
-        if not path.is_file() or path.stat().st_size <= 0:
-            return False
-
-        if path.stat().st_size > MAX_COOKIE_FILE_BYTES:
-            return False
-
-        lines = path.read_text(
-            encoding="utf-8",
-            errors="replace",
-        ).splitlines()
-
-        header_found = any(
-            line.strip().startswith("# Netscape HTTP Cookie File")
-            or line.strip().startswith("# HTTP Cookie File")
-            for line in lines[:20]
-        )
-
-        if not header_found:
-            return False
-
-        for line in lines:
-            line = line.strip()
-
-            if not line or line.startswith("#"):
-                continue
-
-            if len(line.split("\t")) != 7:
-                return False
-
-        return True
-
-    except (OSError, UnicodeError):
-        return False
-
-
-def _chmod_private(path: Path) -> None:
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-
-
-def runtime_cookie_valid() -> bool:
-    return _is_valid_cookie_file(RUNTIME_COOKIE_FILE)
-
-
-def secret_cookie_valid() -> bool:
-    return _is_valid_cookie_file(COOKIE_FILE)
+def _engine(method: str, path: str, payload=None):
+    url = ENGINE_URL + path
+    r = requests.request(method, url, json=payload, timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.json()
 
 
 def auth_status_text() -> str:
-    runtime_ok = runtime_cookie_valid()
-    secret_ok = secret_cookie_valid()
-
-    if runtime_ok:
-        return (
-            "🔐 *YouTube Authentication*\n\n"
-            "Status: ✅ Active\n"
-            "Source: Personal `/login` session\n"
-            "Cookie jar: ✅ Valid\n\n"
-            "The bot is ready to use the authenticated YouTube session."
-        )
-
-    if secret_ok:
-        return (
-            "🔐 *YouTube Authentication*\n\n"
-            "Status: ✅ Active\n"
-            "Source: Render Secret File\n"
-            "Cookie jar: ✅ Valid\n\n"
-            "The bot has a server-side YouTube cookie jar available."
-        )
-
-    if COOKIE_FILE.exists():
-        return (
-            "🔐 *YouTube Authentication*\n\n"
-            "Status: ❌ Invalid\n"
-            "The configured cookies.txt is not a valid Netscape/Mozilla "
-            "cookie export."
-        )
-
-    return (
-        "🔐 *YouTube Authentication*\n\n"
-        "Status: ❌ Not configured\n\n"
-        "Use /login to authenticate your personal YouTube session."
-    )
-
-
-async def login_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if not update.message:
-        return
-
-    if not is_owner(update):
-        await update.message.reply_text(
-            "⛔ This command is restricted to the bot owner."
-        )
-        return
-
-    await update.message.reply_text(
-        "🔐 *Personal YouTube Login*\n\n"
-        "The bot will *not* ask for your Google password and does not use "
-        "Google OAuth.\n\n"
-        "For this Render setup, use the included `local_login.py` helper "
-        "on your own computer. It opens YouTube in your browser, you log in "
-        "normally, and yt-dlp then exports the browser session to a local "
-        "Netscape `youtube-cookies.txt`.\n\n"
-        "*Steps*\n"
-        "1. Download `local_login.py` from the bot ZIP.\n"
-        "2. On your computer run: `python local_login.py`\n"
-        "3. Choose your browser.\n"
-        "4. Log into YouTube in that browser.\n"
-        "5. Let the helper create `youtube-cookies.txt`.\n"
-        "6. Send that file here as a *Document*.\n\n"
-        "The bot validates the file, stores a private runtime copy, and "
-        "uses it for yt-dlp.\n\n"
-        "⚠️ `youtube-cookies.txt` is an authenticated session credential. "
-        "Never commit it to GitHub or share it. Delete the local copy after "
-        "successful activation.\n\n"
-        "Use /auth to check the status.\n"
-        "Use /logout to remove the runtime session.",
-        parse_mode="Markdown",
-    )
-
-async def auth_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if not update.message:
-        return
-
-    if not is_owner(update):
-        await update.message.reply_text(
-            "⛔ This command is restricted to the bot owner."
-        )
-        return
-
-    await update.message.reply_text(
-        auth_status_text(),
-        parse_mode="Markdown",
-    )
-
-
-async def logout_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    if not update.message:
-        return
-
-    if not is_owner(update):
-        await update.message.reply_text(
-            "⛔ This command is restricted to the bot owner."
-        )
-        return
-
-    removed = False
-
     try:
-        if RUNTIME_COOKIE_FILE.exists():
-            RUNTIME_COOKIE_FILE.unlink()
-            removed = True
-    except OSError:
-        pass
-
-    if removed:
-        message = (
-            "🔓 *Runtime YouTube session removed.*\n\n"
-            "The /login-uploaded cookie has been deleted from the runtime."
-        )
-
-        if secret_cookie_valid():
-            message += (
-                "\n\n⚠️ A separate Render Secret File cookies.txt is still "
-                "configured, so downloads may continue using that server-side "
-                "session."
-            )
-    else:
-        message = "ℹ️ No runtime /login session was present."
-
-    await update.message.reply_text(
-        message,
-        parse_mode="Markdown",
-    )
-
-
-async def handle_cookie_document(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    """Accept and validate a private user's exported cookies.txt."""
-    if not update.message or not update.message.document:
-        return
-
-    if not is_owner(update):
-        await update.message.reply_text(
-            "⛔ Cookie login is restricted to the bot owner."
-        )
-        return
-
-    document = update.message.document
-    filename = (document.file_name or "").lower()
-
-    if not filename.endswith((".txt", ".cookies")):
-        return
-
-    if document.file_size and document.file_size > MAX_COOKIE_FILE_BYTES:
-        await update.message.reply_text(
-            "❌ Cookie file is larger than 1 MB."
-        )
-        return
-
-    temp_path: Path | None = None
-
-    try:
-        fd, raw_path = tempfile.mkstemp(
-            prefix="audio-bot-cookie-",
-            suffix=".txt",
-            dir="/tmp",
-        )
-        os.close(fd)
-        temp_path = Path(raw_path)
-        _chmod_private(temp_path)
-
-        telegram_file = await context.bot.get_file(document.file_id)
-        await telegram_file.download_to_drive(custom_path=str(temp_path))
-
-        if not _is_valid_cookie_file(temp_path):
-            await update.message.reply_text(
-                "❌ Invalid cookie file.\n\n"
-                "Expected a Netscape/Mozilla cookies.txt export. "
-                "Do not upload .env contents or pasted environment variables."
-            )
-            return
-
-        RUNTIME_COOKIE_FILE.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
-        new_path = RUNTIME_COOKIE_FILE.with_suffix(
-            RUNTIME_COOKIE_FILE.suffix + ".new"
-        )
-
-        shutil.copyfile(temp_path, new_path)
-        _chmod_private(new_path)
-
-        if not _is_valid_cookie_file(new_path):
-            raise RuntimeError("The runtime cookie copy failed validation.")
-
-        os.replace(new_path, RUNTIME_COOKIE_FILE)
-        _chmod_private(RUNTIME_COOKIE_FILE)
-
-        await update.message.reply_text(
-            "✅ *YouTube login activated.*\n\n"
-            "Your cookie jar passed validation and is now available to "
-            "yt-dlp.\n\n"
-            "Use /auth to verify the status.\n"
-            "Use /logout to remove this runtime session.",
-            parse_mode="Markdown",
-        )
-
+        data = _engine('GET', '/auth/status')
     except Exception as exc:
-        print(
-            "[Auth] Cookie upload failed:",
-            type(exc).__name__,
+        return f"🔐 *YouTube Authentication*\n\n❌ Authentication service unavailable.\n\n`{type(exc).__name__}`"
+
+    status = data.get('status')
+    if status == 'active':
+        return (
+            '🔐 *YouTube Authentication*\n\n'
+            'Status: ✅ Active\n'
+            'Method: YouTube.js OAuth device login\n'
+            'Browser: 📱 Any Android browser\n\n'
+            'The bot has an authenticated YouTube account session.'
         )
+    if status == 'pending':
+        return (
+            '🔐 *YouTube Authentication*\n\n'
+            'Status: ⏳ Waiting for authorization\n\n'
+            f"Open: {data.get('verification_url', '')}\n"
+            f"Code: `{data.get('user_code', '')}`"
+        )
+    if status == 'error':
+        return f"🔐 *YouTube Authentication*\n\n❌ {data.get('message', 'Authentication failed.')}"
+    return (
+        '🔐 *YouTube Authentication*\n\n'
+        'Status: ❌ Not configured\n\n'
+        'Send /login to start the Android browser login.'
+    )
+
+
+async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if not is_owner(update):
+        await update.message.reply_text('⛔ This command is restricted to the bot owner.')
+        return
+
+    try:
+        data = _engine('POST', '/auth/start')
+    except Exception as exc:
         await update.message.reply_text(
-            "❌ Could not activate the cookie file. Please export a fresh "
-            "Netscape-format YouTube cookies.txt and try again."
+            '❌ Authentication service is not ready.\n\n'
+            f'`{type(exc).__name__}: {exc}`',
+            parse_mode='Markdown',
         )
+        return
 
-    finally:
-        if temp_path:
-            try:
-                temp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+    if data.get('status') == 'active':
+        await update.message.reply_text(auth_status_text(), parse_mode='Markdown')
+        return
 
-        # Try to remove the incoming Telegram document message so the
-        # sensitive file is not left visible in the chat history.
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
+    if data.get('status') == 'pending':
+        await update.message.reply_text(
+            '📱 *YouTube Login — Android*\n\n'
+            '1. Tap the verification link below.\n'
+            '2. Sign in to Google/YouTube normally.\n'
+            '3. Enter the displayed code if YouTube asks for it.\n'
+            '4. Approve the device.\n'
+            '5. Return here and send /auth.\n\n'
+            f"🌐 {data.get('verification_url')}\n"
+            f"🔑 Code: `{data.get('user_code')}`\n\n"
+            '🔒 Your Google password is entered only on Google/YouTube. '
+            'The Telegram bot never receives it and no cookies.txt upload is required.',
+            parse_mode='Markdown',
+            disable_web_page_preview=False,
+        )
+        return
+
+    await update.message.reply_text(
+        '⚠️ The mobile login could not be started.\n\n'
+        f"{data.get('message', 'Please try /login again.')}",
+    )
+
+
+async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if not is_owner(update):
+        await update.message.reply_text('⛔ This command is restricted to the bot owner.')
+        return
+    await update.message.reply_text(auth_status_text(), parse_mode='Markdown')
+
+
+async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+    if not is_owner(update):
+        await update.message.reply_text('⛔ This command is restricted to the bot owner.')
+        return
+    try:
+        _engine('POST', '/auth/logout')
+        await update.message.reply_text(
+            '🔓 *YouTube OAuth session removed.*\n\n'
+            'Use /login whenever you want to authorize the bot again.',
+            parse_mode='Markdown',
+        )
+    except Exception as exc:
+        await update.message.reply_text(f'❌ Logout failed: {exc}')
+
+
+async def handle_cookie_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Kept as a compatibility handler. The Android OAuth version deliberately
+    # does not accept cookies.txt credentials.
+    if update.message and update.message.document and is_owner(update):
+        await update.message.reply_text(
+            'ℹ️ This version uses Android OAuth device login.\n\n'
+            'No cookies.txt file is required. Use /login instead.'
+        )

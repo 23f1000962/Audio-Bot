@@ -4,8 +4,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080 \
     PIP_NO_CACHE_DIR=1 \
-    DENO_INSTALL=/root/.deno \
-    PATH=/root/.deno/bin:$PATH
+    YOUTUBE_ENGINE_PORT=8765 \
+    YOUTUBE_ENGINE_DATA=/tmp/audio-bot-youtube
 
 WORKDIR /app
 
@@ -13,27 +13,18 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
         ca-certificates \
-        curl \
-        git \
-        unzip \
+        nodejs \
+        npm \
     && rm -rf /var/lib/apt/lists/*
-
-RUN curl -fsSL https://deno.land/install.sh | sh && \
-    deno upgrade --version 2.9.7 && \
-    deno --version
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py .
-COPY auth.py .
-COPY downloader.py .
-COPY spotify.py .
-COPY start.sh .
+COPY package.json .
+RUN npm install --omit=dev --no-audit --no-fund
 
-RUN chmod +x /app/start.sh
+COPY bot.py auth.py downloader.py spotify.py youtube_engine.mjs start.sh ./
 
-RUN mkdir -p /app/downloads && \
-    chmod 755 /app/downloads
+RUN chmod +x /app/start.sh && mkdir -p /app/downloads
 
 CMD ["/app/start.sh"]

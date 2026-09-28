@@ -28,8 +28,6 @@ from downloader import (
     download_audio,
     DownloadError,
     ProgressTracker,
-    build_ydl_options,
-    prepare_cookie_file,
 )
 
 from spotify import (
@@ -49,7 +47,7 @@ from auth import (
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "3.5.0"
+BOT_VERSION = "4.0.0-android-oauth"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -487,139 +485,29 @@ def cleanup_download_directory():
 # YOUTUBE SEARCH
 # ============================================================
 
-def resolve_youtube_search(
-    query: str,
-):
-
+def resolve_youtube_search(query: str):
+    """Resolve a text query through the local YouTube.js engine."""
     if not query:
-        raise DownloadError(
-            "Search query is empty."
+        raise DownloadError("Search query is empty.")
+
+    import requests
+
+    engine_url = os.getenv("YOUTUBE_ENGINE_URL", "http://127.0.0.1:8765").rstrip("/")
+    try:
+        response = requests.post(
+            f"{engine_url}/search",
+            json={"query": query},
+            timeout=120,
         )
-
-    prepare_cookie_file()
-
-    clients = [
-        "mweb",
-        "web_safari",
-        "android_vr",
-        "web_embedded",
-    ]
-
-    search_query = (
-        f"ytsearch1:{query}"
-    )
-
-    last_error = None
-
-    for client in clients:
-
-        tracker = ProgressTracker()
-
-        options = build_ydl_options(
-            output_dir=DOWNLOAD_DIR,
-            progress_tracker=tracker,
-            player_client=client,
-        )
-
-        options.update(
-            {
-                "skip_download": True,
-                "extract_flat": True,
-                "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
-            }
-        )
-
-        print(
-            "[YouTube Search]",
-            query,
-            "| client:",
-            client,
-        )
-
-        try:
-
-            import yt_dlp
-
-            with yt_dlp.YoutubeDL(
-                options
-            ) as ydl:
-
-                info = ydl.extract_info(
-                    search_query,
-                    download=False,
-                )
-
-            if not info:
-                continue
-
-            entries = (
-                info.get("entries")
-                or []
-            )
-
-            if not entries:
-                continue
-
-            entry = entries[0]
-
-            video_url = (
-                entry.get(
-                    "webpage_url"
-                )
-                or entry.get(
-                    "original_url"
-                )
-            )
-
-            if not video_url:
-
-                video_id = entry.get(
-                    "id"
-                )
-
-                if video_id:
-
-                    video_url = (
-                        "https://www.youtube.com/"
-                        "watch?v="
-                        f"{video_id}"
-                    )
-
-            if video_url:
-
-                print(
-                    "[YouTube Search] "
-                    "Resolved:",
-                    video_url,
-                )
-
-                return video_url
-
-        except Exception as error:
-
-            last_error = error
-
-            print(
-                "[YouTube Search] "
-                "Client failed:",
-                client,
-                type(error).__name__,
-                str(error),
-            )
-
-    if last_error:
-
-        print(
-            "[YouTube Search] "
-            "All clients failed."
-        )
-
-    raise DownloadError(
-        "Could not find the requested "
-        "song on YouTube."
-    )
+        data = response.json()
+        if response.status_code >= 400:
+            raise DownloadError(data.get("error") or "YouTube search failed.")
+        results = data.get("results") or []
+        if not results:
+            raise DownloadError("Could not find the requested YouTube video.")
+        return results[0].get("url") or f"https://www.youtube.com/watch?v={results[0]['id']}"
+    except requests.RequestException as exc:
+        raise DownloadError(f"YouTube engine unavailable: {exc}") from exc
 
 
 # ============================================================
@@ -755,14 +643,14 @@ async def version_command(
 
         f"🤖 *Audio Bot v{BOT_VERSION}*\n\n"
 
-        "🎧 YouTube: yt-dlp + FFmpeg\n"
-        "🔐 PO Tokens: BGUTIL\n"
+        "🎧 YouTube: YouTube.js + FFmpeg\n"
+        "🔐 Login: YouTube OAuth device flow\n"
         "🎵 Output: MP3\n"
         "🖼 Artwork: Metadata supported\n"
         "🏷 Metadata: Enabled\n"
         "🧹 Cleanup: Automatic\n"
         "🔎 Spotify Search: YouTube Music\n"
-        "⬇️ Spotify Download: yt-dlp + FFmpeg\n"
+        "⬇️ Spotify Download: YouTube.js + FFmpeg\n"
         "▶️ YouTube: Search + Download\n\n"
 
         f"⚡ Concurrent downloads: "
@@ -1831,7 +1719,7 @@ async def process_youtube_download(
                 status_message,
 
                 "⬇️ *Downloading from YouTube...*\n\n"
-                "⚙️ Processing with yt-dlp + FFmpeg...",
+                "⚙️ Processing with YouTube.js + FFmpeg...",
             )
 
             result = await download_audio(
@@ -2585,15 +2473,15 @@ def main():
     )
 
     print(
-        "🎧 YouTube Engine: yt-dlp + FFmpeg"
+        "🎧 YouTube Engine: YouTube.js + FFmpeg"
     )
 
     print(
-        "🔐 YouTube PO Tokens: BGUTIL (memory-capped)"
+        "🔐 Login: YouTube OAuth device flow"
     )
 
     print(
-        "🎵 Spotify Engine: YouTube Music"
+        "🎵 Spotify Engine: YouTube Music + YouTube.js"
     )
 
     print(
@@ -2601,7 +2489,7 @@ def main():
     )
 
     print(
-        "⬇️ Spotify Download: yt-dlp + FFmpeg"
+        "⬇️ Spotify Download: YouTube.js + FFmpeg"
     )
 
     print(
