@@ -153,23 +153,28 @@ async def login_command(
 
     await update.message.reply_text(
         "🔐 *Personal YouTube Login*\n\n"
-        "This bot does not ask for your Google password.\n\n"
-        "*1.* Open a new private/incognito browser window.\n"
-        "*2.* Log in to your YouTube account there.\n"
-        "*3.* In that same private window/tab open:\n"
-        "`https://www.youtube.com/robots.txt`\n"
-        "*4.* Export the `youtube.com` cookies as a Netscape/Mozilla "
-        "`cookies.txt` file.\n"
-        "*5.* Send that file here as a *Document*, not as pasted text.\n\n"
-        "⚠️ `cookies.txt` is effectively an authenticated session. "
-        "Do not send it to anyone else or commit it to GitHub.\n\n"
-        "After upload, the bot will validate it and activate it for "
-        "yt-dlp.\n\n"
-        "Use /auth to check the status or /logout to remove the runtime "
-        "session.",
+        "The bot will *not* ask for your Google password and does not use "
+        "Google OAuth.\n\n"
+        "For this Render setup, use the included `local_login.py` helper "
+        "on your own computer. It opens YouTube in your browser, you log in "
+        "normally, and yt-dlp then exports the browser session to a local "
+        "Netscape `youtube-cookies.txt`.\n\n"
+        "*Steps*\n"
+        "1. Download `local_login.py` from the bot ZIP.\n"
+        "2. On your computer run: `python local_login.py`\n"
+        "3. Choose your browser.\n"
+        "4. Log into YouTube in that browser.\n"
+        "5. Let the helper create `youtube-cookies.txt`.\n"
+        "6. Send that file here as a *Document*.\n\n"
+        "The bot validates the file, stores a private runtime copy, and "
+        "uses it for yt-dlp.\n\n"
+        "⚠️ `youtube-cookies.txt` is an authenticated session credential. "
+        "Never commit it to GitHub or share it. Delete the local copy after "
+        "successful activation.\n\n"
+        "Use /auth to check the status.\n"
+        "Use /logout to remove the runtime session.",
         parse_mode="Markdown",
     )
-
 
 async def auth_command(
     update: Update,

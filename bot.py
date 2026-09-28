@@ -49,7 +49,7 @@ from auth import (
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "3.4.0"
+BOT_VERSION = "3.5.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
