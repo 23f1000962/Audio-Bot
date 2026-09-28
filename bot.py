@@ -42,7 +42,7 @@ from spotify import (
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "3.2.0"
+BOT_VERSION = "3.3.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -862,6 +862,141 @@ async def progress_callback(
 
 
 # ============================================================
+# SPOTIFY UI HELPERS
+# ============================================================
+
+def spotify_track_duration(track):
+    """Return a human-readable duration for a Spotify/YT Music result."""
+    if not isinstance(track, dict):
+        return "Unknown"
+
+    value = (
+        track.get("duration_text")
+        or track.get("duration_seconds")
+        or track.get("duration")
+    )
+
+    if isinstance(value, str) and ":" in value:
+        return value
+
+    return format_duration(value) or "Unknown"
+
+
+def spotify_track_details(track, index=None):
+    """Build the confirmation text for a selected Spotify result."""
+    title = track.get("title") or "Unknown Track"
+    artist = track.get("artist") or "Unknown Artist"
+    album = track.get("album") or ""
+    duration = spotify_track_duration(track)
+
+    lines = [
+        "🎵 *Confirm Spotify track*",
+        "",
+    ]
+
+    if index is not None:
+        lines.extend([f"*Option {index + 1}*", ""])
+
+    lines.extend([
+        f"🎵 *Title:* {str(title)[:200]}",
+        f"👤 *Artist:* {str(artist)[:150]}",
+        f"⏱️ *Duration:* {duration}",
+    ])
+
+    if album:
+        lines.append(f"💿 *Album:* {str(album)[:150]}")
+
+    lines.extend(["", "Is this the correct track?"])
+    return "\n".join(lines)
+
+
+def build_spotify_results_keyboard(results):
+    """Build the result-selection keyboard."""
+    keyboard = []
+
+    for index, track in enumerate(results[:SPOTIFY_RESULT_LIMIT]):
+        title = track.get("title") or "Unknown Track"
+        artist = track.get("artist") or "Unknown Artist"
+        duration = spotify_track_duration(track)
+
+        button_text = (
+            f"{index + 1}. {str(title)[:38]}"
+            f" • ⏱ {duration}"
+            f" — {str(artist)[:22]}"
+        )
+
+        keyboard.append([
+            InlineKeyboardButton(
+                button_text,
+                callback_data=f"spotify_select:{index}",
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "❌ Cancel",
+            callback_data="spotify_cancel",
+        )
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def build_spotify_confirmation_keyboard():
+    """Build confirmation controls for a selected track."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Yes, Download",
+                callback_data="spotify_confirm",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "↩️ Back to Results",
+                callback_data="spotify_back",
+            ),
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data="spotify_cancel",
+            ),
+        ],
+    ])
+
+
+async def show_spotify_results(message, results, heading="🎵 *YouTube Music results*"):
+    """Render Spotify search results with duration."""
+    await safe_edit(
+        message,
+        f"{heading}\n\n"
+        "Select the track you want:\n\n"
+        "⏱️ Duration is shown on each option.",
+    )
+
+    try:
+        await message.edit_reply_markup(
+            reply_markup=build_spotify_results_keyboard(results)
+        )
+    except Exception as error:
+        print("[Spotify] Results keyboard error:", error)
+
+
+async def show_spotify_confirmation(message, track, index):
+    """Render the confirmation screen."""
+    await safe_edit(
+        message,
+        spotify_track_details(track, index=index),
+    )
+
+    try:
+        await message.edit_reply_markup(
+            reply_markup=build_spotify_confirmation_keyboard()
+        )
+    except Exception as error:
+        print("[Spotify] Confirmation keyboard error:", error)
+
+
+# ============================================================
 # SPOTIFY SEARCH HANDLER
 # ============================================================
 
@@ -900,22 +1035,56 @@ async def handle_spotify_search(
             status_message = (
                 await update.message.reply_text(
 
-                    "🎵 *Spotify track detected*\n\n"
-                    "⬇️ Preparing download...",
+                    "🔎 *Resolving Spotify track...*\n\n"
+                    "Please wait...",
 
                     parse_mode="Markdown",
                 )
             )
 
-            await process_spotify_download(
-                update=update,
-                context=context,
-                # Pass the full Spotify URL so spotify.py can resolve
-                # public Spotify metadata before searching YouTube Music.
-                track_id=original_text,
-                source_message=status_message,
-                track=None,
-            )
+            try:
+                result = await asyncio.to_thread(
+                    search_spotify,
+                    original_text,
+                    SPOTIFY_RESULT_LIMIT,
+                )
+
+                if not isinstance(result, dict):
+                    raise RuntimeError(
+                        "Spotify search returned an invalid result."
+                    )
+
+                results = result.get("results") or []
+
+                if not results:
+                    await safe_edit(
+                        status_message,
+                        "❌ *No matching YouTube Music track found.*\n\n"
+                        "Please try again.",
+                    )
+                    return
+
+                context.user_data["spotify_results"] = results
+                context.user_data["spotify_query"] = original_text
+
+                await show_spotify_results(
+                    status_message,
+                    results,
+                    heading="🎵 *Spotify track match*",
+                )
+
+            except Exception as error:
+                print(
+                    "[Spotify URL Search Error]",
+                    type(error).__name__,
+                    str(error),
+                )
+
+                await safe_edit(
+                    status_message,
+                    "❌ *Could not resolve the Spotify track.*\n\n"
+                    "Please try again.",
+                )
 
             return
 
@@ -1023,81 +1192,14 @@ async def handle_spotify_search(
         context.user_data[
             "spotify_results"
         ] = results
+        context.user_data[
+            "spotify_query"
+        ] = query
 
-        keyboard = []
-
-        for index, track in enumerate(
-            results[
-                :SPOTIFY_RESULT_LIMIT
-            ]
-        ):
-
-            title = (
-                track.get("title")
-                or "Unknown Track"
-            )
-
-            artist = (
-                track.get("artist")
-                or "Unknown Artist"
-            )
-
-            button_text = (
-                f"{index + 1}. "
-                f"{title[:45]}"
-                f" — "
-                f"{artist[:25]}"
-            )
-
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        button_text,
-                        callback_data=(
-                            f"spotify_select:"
-                            f"{index}"
-                        ),
-                    )
-                ]
-            )
-
-        keyboard.append(
-            [
-                InlineKeyboardButton(
-                    "❌ Cancel",
-                    callback_data=(
-                        "spotify_cancel"
-                    ),
-                )
-            ]
-        )
-
-        await safe_edit(
-
+        await show_spotify_results(
             status_message,
-
-            "🎵 *YouTube Music results*\n\n"
-            "Matched for your Spotify request. Select a track:",
-
+            results,
         )
-
-        try:
-
-            await status_message.edit_reply_markup(
-                reply_markup=(
-                    InlineKeyboardMarkup(
-                        keyboard
-                    )
-                )
-            )
-
-        except Exception as error:
-
-            print(
-                "[Spotify] "
-                "Keyboard error:",
-                error,
-            )
 
     except Exception as error:
 
@@ -1134,9 +1236,7 @@ async def spotify_callback(
 
     await query.answer()
 
-    data = (
-        query.data or ""
-    )
+    data = query.data or ""
 
     # ========================================================
     # CANCEL
@@ -1147,6 +1247,42 @@ async def spotify_callback(
         await safe_edit(
             query.message,
             "❌ *Spotify selection cancelled.*",
+        )
+
+        context.user_data.pop(
+            "spotify_selected_index",
+            None,
+        )
+
+        return
+
+    # ========================================================
+    # BACK TO RESULTS
+    # ========================================================
+
+    if data == "spotify_back":
+
+        results = context.user_data.get(
+            "spotify_results",
+            [],
+        )
+
+        if not results:
+            await safe_edit(
+                query.message,
+                "❌ *The Spotify results have expired.*\n\n"
+                "Please search again.",
+            )
+            return
+
+        context.user_data.pop(
+            "spotify_selected_index",
+            None,
+        )
+
+        await show_spotify_results(
+            query.message,
+            results,
         )
 
         return
@@ -1160,65 +1296,123 @@ async def spotify_callback(
         data,
     )
 
-    if not match:
-        return
+    if match:
 
-    index = int(
-        match.group(1)
-    )
+        index = int(match.group(1))
 
-    results = context.user_data.get(
-        "spotify_results",
-        [],
-    )
+        results = context.user_data.get(
+            "spotify_results",
+            [],
+        )
 
-    if (
-        not results
-        or index < 0
-        or index >= len(results)
-    ):
+        if (
+            not results
+            or index < 0
+            or index >= len(results)
+        ):
 
-        await safe_edit(
+            await safe_edit(
+                query.message,
+                "❌ *This Spotify selection has expired.*\n\n"
+                "Please search again.",
+            )
 
+            return
+
+        track = results[index]
+
+        track_id = (
+            track.get("id")
+            or track.get("track_id")
+            or track.get("youtube_id")
+            or track.get("video_id")
+            or track.get("spotify_id")
+        )
+
+        if not track_id:
+
+            await safe_edit(
+                query.message,
+                "❌ *YouTube Music track ID was not found.*",
+            )
+
+            return
+
+        context.user_data[
+            "spotify_selected_index"
+        ] = index
+
+        await show_spotify_confirmation(
             query.message,
-
-            "❌ *This Spotify selection "
-            "has expired.*\n\n"
-            "Please search again.",
+            track,
+            index,
         )
 
         return
 
-    track = results[index]
+    # ========================================================
+    # CONFIRM DOWNLOAD
+    # ========================================================
 
-    track_id = (
-        track.get("id")
-        or track.get("track_id")
-        or track.get("spotify_id")
-    )
+    if data == "spotify_confirm":
 
-    if not track_id:
+        index = context.user_data.get(
+            "spotify_selected_index"
+        )
 
-        await safe_edit(
+        results = context.user_data.get(
+            "spotify_results",
+            [],
+        )
 
-            query.message,
+        if (
+            index is None
+            or not results
+            or index < 0
+            or index >= len(results)
+        ):
 
-            "❌ *Spotify track ID was not found.*",
+            await safe_edit(
+                query.message,
+                "❌ *This Spotify selection has expired.*\n\n"
+                "Please search again.",
+            )
+
+            return
+
+        track = results[index]
+
+        track_id = (
+            track.get("id")
+            or track.get("track_id")
+            or track.get("youtube_id")
+            or track.get("video_id")
+            or track.get("spotify_id")
+        )
+
+        if not track_id:
+
+            await safe_edit(
+                query.message,
+                "❌ *YouTube Music track ID was not found.*",
+            )
+
+            return
+
+        context.user_data.pop(
+            "spotify_selected_index",
+            None,
+        )
+
+        await process_spotify_download(
+            update=update,
+            context=context,
+            track_id=track_id,
+            source_message=query.message,
+            track=track,
         )
 
         return
-
-    await process_spotify_download(
-
-        update=update,
-        context=context,
-
-        track_id=track_id,
-
-        source_message=query.message,
-
-        track=track,
-    )
 
 
 # ============================================================
@@ -2268,7 +2462,7 @@ def main():
 
             pattern=(
                 r"^spotify_"
-                r"(?:select:\d+|cancel)$"
+                r"(?:select:\d+|confirm|back|cancel)$"
             ),
         )
     )
