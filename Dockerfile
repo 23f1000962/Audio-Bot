@@ -9,10 +9,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# ============================================================
-# SYSTEM DEPENDENCIES
-# ============================================================
-
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ffmpeg \
@@ -22,42 +18,22 @@ RUN apt-get update && \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# ============================================================
-# DENO
-# ============================================================
-
 RUN curl -fsSL https://deno.land/install.sh | sh && \
     deno upgrade --version 2.9.7 && \
     deno --version
 
-# ============================================================
-# PYTHON DEPENDENCIES
-# ============================================================
-
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ============================================================
-# APPLICATION
-# ============================================================
-
 COPY bot.py .
+COPY auth.py .
 COPY downloader.py .
 COPY spotify.py .
 COPY start.sh .
 
 RUN chmod +x /app/start.sh
 
-# ============================================================
-# DOWNLOAD DIRECTORY
-# ============================================================
-
 RUN mkdir -p /app/downloads && \
     chmod 755 /app/downloads
-
-# ============================================================
-# START
-# ============================================================
 
 CMD ["/app/start.sh"]

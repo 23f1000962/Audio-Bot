@@ -37,12 +37,19 @@ from spotify import (
     download_spotify_song,
 )
 
+from auth import (
+    login_command,
+    auth_command,
+    logout_command,
+    handle_cookie_document,
+)
+
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-BOT_VERSION = "3.3.0"
+BOT_VERSION = "3.4.0"
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
@@ -647,6 +654,11 @@ async def start(
         "• Metadata\n"
         "• Automatic cleanup\n\n"
 
+        "🔐 *Personal YouTube login*\n"
+        "`/login` — activate your own YouTube session\n"
+        "`/auth` — check authentication status\n"
+        "`/logout` — remove the runtime login\n\n"
+
         "🎧 *Spotify examples*\n"
         "`Apna Bana Le spotify`\n"
         "`spotify Apna Bana Le`\n"
@@ -677,6 +689,11 @@ async def help_command(
     await update.message.reply_text(
 
         "🎵 *Audio Bot Help*\n\n"
+
+        "*Personal YouTube authentication*\n"
+        "`/login` — instructions to authenticate your own YouTube session\n"
+        "`/auth` — show authentication status\n"
+        "`/logout` — remove the runtime session\n\n"
 
         "*YouTube URL*\n"
         "`https://youtube.com/watch?v=...`\n\n"
@@ -2447,6 +2464,38 @@ def main():
         CommandHandler(
             "version",
             version_command,
+        )
+    )
+
+    # ========================================================
+    # PERSONAL YOUTUBE AUTHENTICATION
+    # ========================================================
+
+    application.add_handler(
+        CommandHandler(
+            "login",
+            login_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "auth",
+            auth_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "logout",
+            logout_command,
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.Document.ALL,
+            handle_cookie_document,
         )
     )
 

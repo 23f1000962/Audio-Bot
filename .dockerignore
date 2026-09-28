@@ -1,10 +1,10 @@
 .git
 .gitignore
-.env
-.env.*
-downloads/
-__pycache__/
-*.pyc
-node_modules/
-.wrangler/
 README.md
+AUTH_SETUP.md
+.env
+cookies.txt
+*.cookies
+*.pyc
+__pycache__/
+downloads/

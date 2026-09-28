@@ -41,7 +41,7 @@ from ytmusicapi import YTMusic
 
 logger = logging.getLogger(__name__)
 
-SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-lowram-1.3"
+SPOTIFY_DOWNLOADER_VERSION = "youtube-music-bgutil-cookies-lowram-1.4"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -803,6 +803,13 @@ def _find_cookie_source() -> Path | None:
 
     candidates.extend(
         [
+            # Personal /login session.
+            Path(
+                os.getenv(
+                    "YOUTUBE_RUNTIME_COOKIE_FILE",
+                    "/tmp/youtube-cookies.txt",
+                )
+            ),
             Path("/etc/secrets/cookies.txt"),
             Path("/app/cookies.txt"),
             Path("cookies.txt"),

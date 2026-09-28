@@ -183,8 +183,22 @@ def cookies_available() -> bool:
 
 def prepare_cookie_file() -> bool:
 
-    # Remove a stale runtime copy first when the source is missing or
-    # malformed. This prevents an old invalid cookie jar from being reused.
+    # A valid runtime cookie can be supplied by the personal /login flow.
+    # Keep it instead of overwriting it with the Render Secret File.
+    if _is_valid_cookie_file(RUNTIME_COOKIE_FILE):
+
+        try:
+            os.chmod(RUNTIME_COOKIE_FILE, 0o600)
+        except OSError:
+            pass
+
+        print(
+            "YouTube cookies: valid runtime /login session"
+        )
+
+        return True
+
+    # Otherwise prepare the normal Render Secret File copy.
     if not cookies_available():
 
         try:
