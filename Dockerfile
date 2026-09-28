@@ -5,8 +5,7 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=8080 \
     PIP_NO_CACHE_DIR=1 \
     DENO_INSTALL=/root/.deno \
-    PATH=/root/.deno/bin:$PATH \
-    BGUTIL_HOME=/opt/bgutil
+    PATH=/root/.deno/bin:$PATH
 
 WORKDIR /app
 
@@ -23,7 +22,6 @@ RUN apt-get update && \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-
 # ============================================================
 # DENO
 # ============================================================
@@ -31,7 +29,6 @@ RUN apt-get update && \
 RUN curl -fsSL https://deno.land/install.sh | sh && \
     deno upgrade --version 2.9.7 && \
     deno --version
-
 
 # ============================================================
 # PYTHON DEPENDENCIES
@@ -41,30 +38,9 @@ COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-
-# ============================================================
-# BGUTIL PO TOKEN PROVIDER
-# ============================================================
-
-RUN git clone \
-        --single-branch \
-        --branch 2.0.0 \
-        --depth 1 \
-        https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git \
-        ${BGUTIL_HOME}
-
-WORKDIR ${BGUTIL_HOME}/server
-
-RUN deno install \
-        --allow-scripts=npm:canvas \
-        --frozen
-
-
 # ============================================================
 # APPLICATION
 # ============================================================
-
-WORKDIR /app
 
 COPY bot.py .
 COPY downloader.py .
@@ -73,14 +49,12 @@ COPY start.sh .
 
 RUN chmod +x /app/start.sh
 
-
 # ============================================================
 # DOWNLOAD DIRECTORY
 # ============================================================
 
 RUN mkdir -p /app/downloads && \
     chmod 755 /app/downloads
-
 
 # ============================================================
 # START

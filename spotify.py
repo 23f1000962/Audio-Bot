@@ -841,7 +841,7 @@ def _ytdlp_common_args() -> list[str]:
         "--no-playlist",
         "--no-warnings",
         "--extractor-args",
-        "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416",
+        "youtubepot-bgutilhttp:base_url=https://audiobot-bgutil.onrender.com",
     ]
 
     cookie_file = _find_cookie_file()
