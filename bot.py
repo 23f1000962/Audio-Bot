@@ -2242,6 +2242,21 @@ async def post_init(
                 "version",
                 "Show bot version",
             ),
+
+            BotCommand(
+                 "login",
+                "Login with YouTube",
+            ),
+            
+            BotCommand(
+                "auth",
+                "Check YouTube login",
+            ),
+            
+            BotCommand(
+                "logout",
+                "Logout from YouTube",
+            ),
         ]
     )
 
